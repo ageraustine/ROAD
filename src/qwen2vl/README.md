@@ -54,12 +54,20 @@ python train.py
 ```
 
 **Expected outputs:**
-- `outputs/qwen2vl-7b-run1/best/` - Best checkpoint by eval loss
-- `outputs/qwen2vl-7b-run1/final/` - Final checkpoint
+- `outputs/qwen2vl-7b-run2/best/` - Best checkpoint by eval loss (use this!)
+- `outputs/qwen2vl-7b-run2/final/` - Final checkpoint
 
-**Training time:** ~6-8 hours on A100 80GB (5 epochs, 4098 samples)
+**Training time:** ~2 hours on A100 80GB (3 epochs, 4098 samples, no Flash Attention)
 
 **Memory usage:** ~45-55GB VRAM
+
+**Config Optimization:**
+Current config is tuned to prevent overfitting observed in initial training runs:
+- Reduced epochs: 3 (best model typically found at epoch 1-2)
+- Increased regularization: weight_decay=0.05, lora_dropout=0.1
+- More augmentation: higher probabilities for blur, noise, brightness, contrast
+
+See `TRAINING_NOTES.md` for detailed analysis of training runs and tuning decisions.
 
 ## Inference
 
@@ -100,12 +108,15 @@ training:
 ```yaml
 augmentation:
   enabled: true
-  p_blur: 0.2          # Gaussian blur
-  p_noise: 0.2         # Gaussian noise
-  p_brightness: 0.3    # Brightness adjustment
-  p_contrast: 0.3      # Contrast adjustment
-  p_rotate: 0.1        # Small rotation (±2°)
+  # Conservative approach for historical documents
+  p_blur: 0.0          # Disabled (documents already degraded)
+  p_noise: 0.0         # Disabled (documents already have grain)
+  p_brightness: 0.3    # Scan exposure variations
+  p_contrast: 0.3      # Ink fade variations
+  p_rotate: 0.1        # Alignment variations (±1°)
 ```
+
+**Philosophy:** Historical documents are already faded and degraded. Adding artificial blur/noise on top risks making text illegible and confuses the model. Focus on realistic scanning variations only.
 
 ## Hyperparameter Tuning Notes
 

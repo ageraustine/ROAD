@@ -44,7 +44,14 @@ OCR_PROMPT = (
 # ─────────────────────────────────────────────────────────────
 
 class ImageAugmenter:
-    """Augmentations for historical document images."""
+    """
+    Augmentations for historical document images.
+
+    Philosophy: Conservative augmentation for already-degraded documents.
+    - Focus on realistic scanning variations (brightness, contrast, rotation)
+    - Avoid artificial degradation (blur, noise) on already-faded text
+    - All augmentations are configurable and can be disabled (p=0.0)
+    """
 
     def __init__(self, cfg: dict):
         self.enabled = cfg.get("enabled", False)

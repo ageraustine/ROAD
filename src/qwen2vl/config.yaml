@@ -20,24 +20,24 @@ data:
   seed: 42
 
 training:
-  output_dir: "outputs/qwen2vl-7b-run1"
+  output_dir: "outputs/qwen2vl-7b-run2"  # new run
 
   # Batch
   batch_size: 4
   gradient_accumulation_steps: 4  # effective = 16
 
-  # Schedule
-  epochs: 5
+  # Schedule (reduced epochs to prevent overfitting)
+  epochs: 3  # down from 5 - best model typically at epoch 1-2
   learning_rate: 2.0e-5
   warmup_ratio: 0.1
   lr_scheduler: "cosine"
-  weight_decay: 0.01
+  weight_decay: 0.05  # increased from 0.01 - stronger regularization
   max_grad_norm: 1.0
 
-  # LoRA
+  # LoRA (increased dropout for regularization)
   lora_r: 64
   lora_alpha: 128
-  lora_dropout: 0.05
+  lora_dropout: 0.1  # increased from 0.05
   lora_target_modules:
     - "q_proj"
     - "k_proj"
@@ -61,16 +61,19 @@ training:
 
 augmentation:
   enabled: true
-  # Probabilities
-  p_blur: 0.2
-  p_noise: 0.2
-  p_brightness: 0.3
-  p_contrast: 0.3
-  p_rotate: 0.1
-  max_rotation: 2  # degrees
+  # Focus on realistic scanning variations only
+  # Historical documents are already degraded - avoid adding artificial degradation
+  p_blur: 0.0       # Disabled - documents already have focus issues
+  p_noise: 0.0      # Disabled - documents already have paper texture/grain
+  p_brightness: 0.3 # Different scan exposures (realistic)
+  p_contrast: 0.3   # Ink fade variations (realistic)
+  p_rotate: 0.1     # Small alignment issues (realistic)
+  max_rotation: 1   # ±1 degree (conservative)
 
 inference:
-  checkpoint: "outputs/qwen2vl-7b-run1/best"
+  # Use "best" checkpoint (saved at lowest eval_loss during training)
+  # For run1: best was at epoch ~1.7 with eval_loss=0.7017
+  checkpoint: "outputs/qwen2vl-7b-run2/best"  # update to match current run
   output_csv: "submission.csv"
   max_new_tokens: 256
   num_beams: 5

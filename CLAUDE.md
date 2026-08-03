@@ -94,7 +94,7 @@ python eval_metrics.py # Evaluate
 - **Precision**: BF16 for optimal A100 utilization
 
 ### Key Features
-- **Augmentation pipeline**: Blur, noise, brightness, contrast, rotation
+- **Conservative augmentation**: Brightness, contrast, rotation only (no blur/noise on already-degraded documents)
 - **Curriculum learning ready**: Easy/hard sample separation
 - **High-res processing**: 2M pixels (~1344x1500)
 - **Beam search**: 5 beams for better decoding
@@ -132,12 +132,12 @@ python inference.py
 - Epochs: 5
 - LoRA rank: 64 (higher capacity than baseline)
 
-**Augmentation probabilities:**
-- Blur: 20%
-- Noise: 20%
-- Brightness: 30%
-- Contrast: 30%
-- Rotation: 10% (±2 degrees)
+**Augmentation (conservative for historical docs):**
+- Blur: Disabled (documents already degraded)
+- Noise: Disabled (documents already have grain)
+- Brightness: 30% (scan exposure variations)
+- Contrast: 30% (ink fade variations)
+- Rotation: 10% (±1 degree alignment)
 
 ### Expected Performance
 - Baseline 7B without augmentation: WER ~15-20%, CER ~5-8%
