@@ -90,7 +90,7 @@ python eval_metrics.py # Evaluate
 ### Architecture
 - **Model**: Qwen2-VL-7B-Instruct (full precision, no quantization)
 - **Fine-tuning**: LoRA (r=64, alpha=128) on full model
-- **Flash Attention 2**: Enabled for speed
+- **Flash Attention 2**: Optional (improves speed 20-30%, auto-fallback if unavailable)
 - **Precision**: BF16 for optimal A100 utilization
 
 ### Key Features
@@ -101,11 +101,17 @@ python eval_metrics.py # Evaluate
 
 ### Training Setup
 
+**Option 1: Google Colab (Recommended)**
+```
+1. Open train_colab.ipynb in Google Colab
+2. Set Runtime to GPU (A100)
+3. Run all cells
+```
+
+**Option 2: Local/Remote GPU**
 ```bash
 cd src/qwen2vl
 pip install -r requirements.txt
-
-# Edit config.yaml - verify paths
 python train.py
 
 # Expected training time: ~6-8 hours on A100 80GB

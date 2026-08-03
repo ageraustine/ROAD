@@ -265,15 +265,37 @@ def setup_model(cfg: dict):
         "trust_remote_code": True,
     }
 
-    # Flash attention
-    if model_cfg.get("use_flash_attention", True):
-        model_kwargs["attn_implementation"] = "flash_attention_2"
+    # Flash attention (optional)
+    use_flash = model_cfg.get("use_flash_attention", True)
 
     print(f"Loading model: {model_cfg['name']}")
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
-        model_cfg["name"],
-        **model_kwargs,
-    )
+
+    if use_flash:
+        try:
+            # Try with Flash Attention 2
+            model_kwargs["attn_implementation"] = "flash_attention_2"
+            model = Qwen2VLForConditionalGeneration.from_pretrained(
+                model_cfg["name"],
+                **model_kwargs,
+            )
+            print("✓ Using Flash Attention 2")
+        except Exception as e:
+            print(f"⚠️  Flash Attention 2 not available: {e}")
+            print("  Falling back to standard attention...")
+            # Fallback to standard attention
+            model_kwargs.pop("attn_implementation", None)
+            model = Qwen2VLForConditionalGeneration.from_pretrained(
+                model_cfg["name"],
+                **model_kwargs,
+            )
+            print("✓ Using standard attention")
+    else:
+        print("Flash Attention 2 disabled in config")
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            model_cfg["name"],
+            **model_kwargs,
+        )
+        print("✓ Using standard attention")
 
     # Disable cache for training
     model.config.use_cache = False

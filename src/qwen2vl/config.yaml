@@ -3,7 +3,12 @@
 
 model:
   name: "Qwen/Qwen2-VL-7B-Instruct"
+
+  # Flash Attention (optional - improves speed/memory)
+  # Set to false if installation fails or unavailable
+  # Auto-fallback to standard attention if Flash Attention errors
   use_flash_attention: true
+
   use_quantization: false  # full precision on A100 80GB
   torch_dtype: "bfloat16"
 

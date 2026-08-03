@@ -75,14 +75,34 @@ def load_model(checkpoint_path: str, model_name: str, use_flash: bool = True):
         "trust_remote_code": True,
     }
 
-    if use_flash:
-        model_kwargs["attn_implementation"] = "flash_attention_2"
-
     print(f"Loading base model: {model_name}")
-    base_model = Qwen2VLForConditionalGeneration.from_pretrained(
-        model_name,
-        **model_kwargs,
-    )
+
+    if use_flash:
+        try:
+            # Try with Flash Attention 2
+            model_kwargs["attn_implementation"] = "flash_attention_2"
+            base_model = Qwen2VLForConditionalGeneration.from_pretrained(
+                model_name,
+                **model_kwargs,
+            )
+            print("✓ Using Flash Attention 2")
+        except Exception as e:
+            print(f"⚠️  Flash Attention 2 not available: {e}")
+            print("  Falling back to standard attention...")
+            # Fallback to standard attention
+            model_kwargs.pop("attn_implementation", None)
+            base_model = Qwen2VLForConditionalGeneration.from_pretrained(
+                model_name,
+                **model_kwargs,
+            )
+            print("✓ Using standard attention")
+    else:
+        print("Flash Attention 2 disabled")
+        base_model = Qwen2VLForConditionalGeneration.from_pretrained(
+            model_name,
+            **model_kwargs,
+        )
+        print("✓ Using standard attention")
 
     print(f"Loading LoRA weights from: {checkpoint_path}")
     model = PeftModel.from_pretrained(base_model, checkpoint_path)

@@ -23,15 +23,29 @@ qwen2vl/
 
 ## Setup
 
+### Local Setup
 ```bash
 # Install dependencies
 pip install -r requirements.txt
-
-# Verify config paths
-# Edit config.yaml to ensure:
-#   - general.repo_root points to project root
-#   - All paths are correct
 ```
+
+### Google Colab Setup
+Use `train_colab.ipynb` in the repo root - it handles everything automatically:
+- GPU verification (A100 recommended)
+- Repository cloning and updates
+- Dataset download
+- Fast dependency installation (pre-built Flash Attention wheels)
+- Training and inference
+
+**Workflow:**
+1. First run: Clones repo and sets up environment (~3 min setup)
+2. Subsequent runs: Optional cell to pull latest code updates
+3. All paths auto-detected - no manual configuration needed
+
+**Performance notes:**
+- Flash Attention installs in ~30 seconds using pre-built wheels (vs 10-15 min from source)
+- Flash Attention is **optional** - training works fine without it (20-30% slower, same accuracy)
+- Auto-fallback to standard attention if Flash Attention unavailable
 
 ## Training
 
@@ -123,6 +137,11 @@ augmentation:
 
 ## Troubleshooting
 
+**Flash Attention installation issues:**
+- Set `use_flash_attention: false` in config.yaml
+- Training will work fine with standard attention (20-30% slower)
+- Accuracy is identical, only speed/memory affected
+
 **OOM (Out of Memory):**
 - Reduce `batch_size` to 2
 - Reduce `max_pixels` to 1.5M
@@ -141,7 +160,7 @@ augmentation:
 **Slow training:**
 - Increase `batch_size` if VRAM allows
 - Reduce `dataloader_num_workers` if CPU bound
-- Verify Flash Attention is enabled (check logs)
+- Check if Flash Attention is enabled (see logs at model load)
 
 ## Competition Strategy
 

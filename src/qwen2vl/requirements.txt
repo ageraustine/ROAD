@@ -8,6 +8,8 @@ accelerate>=0.27.0
 peft>=0.10.0
 
 # Flash Attention (A100 optimized)
+# Note: For Colab, use pre-built wheels in notebook for faster install
+# For local: pip install flash-attn>=2.5.0 --no-build-isolation
 flash-attn>=2.5.0
 
 # Data processing
