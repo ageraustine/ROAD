@@ -16,8 +16,14 @@ data:
   train_csv: "dataset/Train.csv"
   test_csv: "dataset/Test.csv"
   image_dir: "dataset/images"
-  val_split: 0.1
+
+  # Validation split (stratified by text length for small datasets)
+  val_split: 0.1  # 10% = ~410 samples (balanced for 4K dataset)
   seed: 42
+
+  # Note: train.py uses stratified split by text length to ensure
+  # validation set has similar length distribution to training set.
+  # This is critical for reliable WER/CER metrics on small datasets.
 
 training:
   output_dir: "outputs/qwen2vl-7b-run2"  # new run

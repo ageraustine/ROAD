@@ -118,6 +118,24 @@ augmentation:
 
 **Philosophy:** Historical documents are already faded and degraded. Adding artificial blur/noise on top risks making text illegible and confuses the model. Focus on realistic scanning variations only.
 
+### Data Split Strategy
+
+**Stratified sampling by text length** (critical for small datasets):
+```yaml
+data:
+  val_split: 0.1  # 10% = ~410 samples
+  seed: 42
+```
+
+**Why stratify by text length?**
+- With only 4,098 samples, random split can create unrepresentative validation sets
+- WER/CER metrics weight longer texts more heavily
+- Ensures validation metrics are stable and reliable
+
+**Implementation:** `train.py` automatically creates 5 text length bins and ensures each is proportionally represented in train/val.
+
+**To analyze your split:** `python analyze_split.py`
+
 ## Hyperparameter Tuning Notes
 
 **What we optimized:**

@@ -19,6 +19,37 @@
 
 ---
 
+## Data Split Strategy (Small Dataset Optimization)
+
+### Stratified Splitting by Text Length
+
+**Problem:** With only 4,098 samples, random split can create unrepresentative validation sets.
+
+**Solution:** Stratify by text length (quintiles)
+```python
+# Create 5 length bins
+df['length_bin'] = pd.qcut(df['text_length'], q=5, labels=False)
+
+# Stratified split ensures each bin proportionally represented
+train_df, val_df = train_test_split(df, test_size=0.1, stratify=df['length_bin'])
+```
+
+**Why text length?**
+- WER/CER metrics weight longer texts more heavily
+- Validation metrics more stable when length distribution matches training
+- Reduces variance in eval scores across runs
+
+**Alternative strategies:**
+- **Stratify by difficulty:** Character diversity, special characters
+- **K-fold CV:** 5-fold for more reliable metrics (5x training time)
+- **Larger val split:** 15% for more stable metrics (less training data)
+
+**Current choice:** 10% stratified by length (balanced trade-off)
+
+**To analyze your split:** `python analyze_split.py`
+
+---
+
 ## Run 2 Config (Anti-Overfitting Tuning)
 
 ### Changes Made

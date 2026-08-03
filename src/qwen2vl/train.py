@@ -349,12 +349,22 @@ def train(cfg: dict):
     print(f"Loading data from {train_csv}")
     df = pd.read_csv(train_csv)
 
-    # Train/val split
+    # Stratified train/val split by text length
+    # Ensures validation set has similar length distribution to training
+    print("Creating stratified split by text length...")
+    df['text_length'] = df['Target'].str.len()
+    df['length_bin'] = pd.qcut(df['text_length'], q=5, labels=False, duplicates='drop')
+
     train_df, val_df = train_test_split(
         df,
         test_size=data_cfg["val_split"],
+        stratify=df['length_bin'],
         random_state=data_cfg["seed"],
     )
+
+    # Drop helper columns
+    train_df = train_df.drop(columns=['text_length', 'length_bin'])
+    val_df = val_df.drop(columns=['text_length', 'length_bin'])
 
     print(f"Train: {len(train_df)}, Val: {len(val_df)}")
 
