@@ -1,0 +1,36 @@
+general:
+  repo_root: "/workspace/barbados-road-challenge"
+
+training:
+  train_csv: "code/scripts/data/Train.csv"
+  base_image_dir: "code/scripts/data/images"
+  output: "code/scripts/Kraken-OCR/kraken_model"
+  load_model: null
+  load_hyper_parameters: false
+  append: null
+  resize: null
+  train_data_dir: "code/scripts/Kraken-OCR/kraken_train_data"
+  log_dir: "code/scripts/Kraken-OCR/training_logs"
+  batch_size: 16
+  epochs: 1
+  partition: 0.9
+  format_type: "path"
+  force_binarization: false
+
+inference:
+  model_path: "code/scripts/Kraken-OCR/kraken_model_catmus_continued_2.mlmodel"
+  test_csv: "code/scripts/data/Test.csv"
+  base_image_dir: "code/scripts/data/images"
+  output_csv: "submission.csv"
+  device: "auto"
+  use_gpu: true
+  pad: 16
+  threshold: null
+  text_direction: "horizontal-lr"
+  bidi_reordering: true
+
+evaluation:
+  pred_csv: "submission.csv"
+  pub_gt: "code/scripts/data/pub_ref.csv"
+  priv_gt: "code/scripts/data/priv_ref.csv"
+  weight_factor: 0.5

@@ -1,0 +1,11 @@
+-f https://www.paddlepaddle.org.cn/whl/linux/gpu/cuda130/avx/stable.html
+paddleocr==2.10.0
+paddlepaddle-gpu==2.6.2
+pandas
+pyyaml
+evaluate
+jiwer
+pillow
+opencv-python-headless
+numpy
+tqdm

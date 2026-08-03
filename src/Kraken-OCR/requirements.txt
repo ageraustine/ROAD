@@ -1,0 +1,9 @@
+kraken==6.0.3
+pandas>=2.0
+pyyaml
+Pillow
+numpy
+evaluate
+jiwer
+tqdm
+torch>=2.0.0,<3.0

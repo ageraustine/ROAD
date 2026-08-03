@@ -1,0 +1,145 @@
+# CLAUDE.md - R.O.A.D. Project Guide
+
+## Project Overview
+
+**Reclaiming Our Atlantic Destiny (R.O.A.D.)** - A Zindi ML competition for handwritten text recognition (HTR) on historical Barbados archival documents.
+
+**Goal**: Build an OCR model to transcribe colonial-era handwritten text (deeds, wills, census records) from scanned images.
+
+## Dataset Structure
+
+```
+dataset/
+├── Train.csv          # 4098 samples (ID, Target)
+├── Test.csv           # 1373 samples (ID only)
+├── SampleSubmission.csv
+└── images/            # 5472 JPG images
+```
+
+- **ID**: Image filename without extension (e.g., `uGI8F9Er0c5XwdnX`)
+- **Target**: Ground truth transcription text
+
+## Evaluation Metrics
+
+Final score = 0.5 * WER + 0.5 * CER (lower is better)
+
+- **WER**: Word Error Rate
+- **CER**: Character Error Rate
+- Longer transcriptions weighted more heavily
+
+## Submission Format
+
+```csv
+ID,Target
+MzQuRiUbPFsq6Azy,transcribed text here
+```
+
+## Starter Approaches
+
+Located in `src/`:
+
+| Approach | Directory | Best For | Training |
+|----------|-----------|----------|----------|
+| VLM | `VLM/` | Highest accuracy (Qwen2-VL) | Yes |
+| Kraken-OCR | `Kraken-OCR/` | Historical documents | Yes |
+| Paddle-OCR | `Paddle-OCR/` | Fast inference | Limited |
+
+### Each starter contains:
+- `setup.sh` - Environment setup (creates conda env)
+- `config.yaml` - Configuration paths
+- `inference.py` - Generate predictions
+- `eval_metrics.py` - Calculate WER/CER
+- `train.py` or `trainer.py` - Training script (VLM/Kraken)
+
+## Quick Start
+
+```bash
+# Example: VLM approach
+cd src/VLM
+bash setup.sh
+conda activate vlm_env
+# Edit config.yaml with correct paths
+python trainer.py      # Train
+python inference.py    # Generate submission.csv
+python eval_metrics.py # Evaluate
+```
+
+## Key Challenges
+
+- Faded ink and degraded pages
+- Unfamiliar historical handwriting styles
+- Variable text lengths
+
+## System Requirements
+
+- Python 3.11
+- 16GB+ RAM (32GB recommended)
+- CUDA GPU recommended (11.8+ for Kraken, 12.x for Paddle/VLM)
+
+## Important Paths
+
+- Images: `dataset/images/{ID}.jpg`
+- Update `repo_root` and `base_image_dir` in config.yaml files
+
+---
+
+## Competition Pipeline (src/qwen2vl/)
+
+**Optimized for winning with A100 80GB VRAM**
+
+### Architecture
+- **Model**: Qwen2-VL-7B-Instruct (full precision, no quantization)
+- **Fine-tuning**: LoRA (r=64, alpha=128) on full model
+- **Flash Attention 2**: Enabled for speed
+- **Precision**: BF16 for optimal A100 utilization
+
+### Key Features
+- **Augmentation pipeline**: Blur, noise, brightness, contrast, rotation
+- **Curriculum learning ready**: Easy/hard sample separation
+- **High-res processing**: 2M pixels (~1344x1500)
+- **Beam search**: 5 beams for better decoding
+
+### Training Setup
+
+```bash
+cd src/qwen2vl
+pip install -r requirements.txt
+
+# Edit config.yaml - verify paths
+python train.py
+
+# Expected training time: ~6-8 hours on A100 80GB
+```
+
+### Inference
+
+```bash
+python inference.py
+# Generates submission.csv in repo root
+```
+
+### Configuration (config.yaml)
+
+**Training hyperparameters:**
+- Batch size: 4 (effective 16 with grad accumulation)
+- Learning rate: 2e-5 with cosine schedule
+- Epochs: 5
+- LoRA rank: 64 (higher capacity than baseline)
+
+**Augmentation probabilities:**
+- Blur: 20%
+- Noise: 20%
+- Brightness: 30%
+- Contrast: 30%
+- Rotation: 10% (±2 degrees)
+
+### Expected Performance
+- Baseline 7B without augmentation: WER ~15-20%, CER ~5-8%
+- With augmentation: WER ~12-15%, CER ~4-6%
+- Ensemble potential: Additional 2-3% improvement
+
+### Next Steps for Improvement
+1. Error analysis on validation set
+2. Add TrOCR ensemble
+3. Post-processing with historical language model
+4. Test-time augmentation (TTA)

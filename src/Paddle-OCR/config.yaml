@@ -1,0 +1,19 @@
+general:
+  repo_root: "/workspace/barbados-road-challenge"
+
+inference:
+  test_csv: "code/scripts/data/Test.csv"
+  base_image_dir: "code/scripts/data/images"
+  output_csv: "code/scripts/Starters/Paddle-OCR/submission.csv"
+  device: "auto"
+  use_gpu: true
+  use_angle_cls: true
+  lang: "en"
+  det_db_thresh: 0.3
+  det_db_box_thresh: 0.5
+
+evaluation:
+  pred_csv: "submission.csv"
+  pub_gt: "data/pub_ref.csv"
+  priv_gt: "data/priv_ref.csv"
+  weight_factor: 1.0

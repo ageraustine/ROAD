@@ -1,0 +1,59 @@
+general:
+  repo_root: "/Users/macbook/Desktop/miradi/ROAD"
+
+training:
+  # Model - using 7B for A100 80GB
+  model_id: "Qwen/Qwen2-VL-7B-Instruct"
+
+  # Data paths (relative to repo_root)
+  train_csv: "dataset/Train.csv"
+  base_image_dir: "dataset/images"
+  output_dir: "./qwen2-vl-7b-ocr"
+
+  # Training hyperparameters (optimized for A100 80GB)
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4  # effective batch size = 16
+  num_train_epochs: 5
+  learning_rate: 2e-5
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+
+  # Dataloader
+  dataloader_num_workers: 8
+
+  # Image processing
+  max_pixels: 2000000  # higher res for historical docs
+
+  # Precision - full bf16, no quantization (we have 80GB)
+  use_bf16: true
+  use_quantization: false  # disable 4-bit, use full precision
+
+  # LoRA config
+  r: 64              # higher rank for better capacity
+  lora_alpha: 128
+  lora_dropout: 0.05
+
+  # Augmentation
+  use_augmentation: true
+
+  # Evaluation
+  eval_steps: 100
+  save_best: true
+
+  # Debug mode
+  debug: false
+
+inference:
+  model_path: "./qwen2-vl-7b-ocr/best"
+  test_csv: "dataset/Test.csv"
+  base_image_dir: "dataset/images"
+  output_csv: "submission.csv"
+  device: "auto"
+  use_bf16: true
+  max_new_tokens: 256  # longer for historical text
+  num_beams: 5         # more beams for better decoding
+
+evaluation:
+  pred_csv: "submission.csv"
+  ground_truth_csv: "dataset/Train.csv"  # for local validation
+  weight_factor: 0.5

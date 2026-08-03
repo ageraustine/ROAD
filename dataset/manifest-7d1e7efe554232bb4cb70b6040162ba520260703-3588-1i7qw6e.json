@@ -1,0 +1,40 @@
+{
+  "description": "This is a system generated manifest of files expected to be present in this zip. It can be safely deleted.",
+  "metadata": {
+    "generated_at": "2026-07-03T22:22:56+00:00",
+    "trigger": {
+      "file_hashid": "unknown",
+      "action": "unknown"
+    }
+  },
+  "manifest": [
+    {
+      "filename": "Train.csv",
+      "filesize": 333913,
+      "description": "Train contains the target. This is the dataset that you will use to train your model.",
+      "created_at": "2026-07-02 21:17:44 UTC",
+      "updated_at": "2026-07-02 21:17:47 UTC"
+    },
+    {
+      "filename": "Test.csv",
+      "filesize": 24737,
+      "description": "This is the test dataset for evaluating your model.",
+      "created_at": "2026-07-03 14:22:03 UTC",
+      "updated_at": "2026-07-03 14:46:51 UTC"
+    },
+    {
+      "filename": "Starters.zip",
+      "filesize": 29178,
+      "description": "Starter OCR Pack.",
+      "created_at": "2026-07-03 14:59:58 UTC",
+      "updated_at": "2026-07-03 15:00:00 UTC"
+    },
+    {
+      "filename": "SampleSubmission.csv",
+      "filesize": 44631,
+      "description": "Is an example of what your submission file should look like. The order of the rows does not matter, but the names of the \"ID\" must be correct.",
+      "created_at": "2026-07-02 21:18:36 UTC",
+      "updated_at": "2026-07-02 21:18:38 UTC"
+    }
+  ]
+}

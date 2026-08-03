@@ -1,0 +1,15 @@
+transformers
+accelerate
+bitsandbytes>=0.46.1
+peft
+trl
+datasets
+evaluate
+jiwer
+pillow
+tqdm
+torch
+torchvision
+av
+scikit-learn
+pyyaml
