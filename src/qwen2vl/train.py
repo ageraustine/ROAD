@@ -384,14 +384,22 @@ def train_single_fold(
     fold_num: int = None,
 ):
     """Train a single fold or single model."""
+    import logging
+
+    # Reduce logging noise for K-Fold training
+    logging.getLogger("transformers").setLevel(logging.WARNING)
+    logging.getLogger("accelerate").setLevel(logging.WARNING)
+
     train_cfg = cfg["training"]
     aug_cfg = cfg.get("augmentation", {})
 
     fold_output_dir.mkdir(parents=True, exist_ok=True)
 
-    fold_str = f"Fold {fold_num}" if fold_num is not None else "Model"
+    is_kfold = fold_num is not None
+    fold_str = f"Fold {fold_num}/5" if is_kfold else "Model"
+
     print(f"\n{'='*70}")
-    print(f"{fold_str} - Train: {len(train_df)}, Val: {len(val_df)}")
+    print(f"🔄 {fold_str} - Train: {len(train_df)}, Val: {len(val_df)}")
     print(f"{'='*70}\n")
 
     # Build datasets
@@ -415,10 +423,15 @@ def train_single_fold(
     warmup_ratio = train_cfg.get("warmup_ratio", 0.1)
     warmup_steps = int(total_steps * warmup_ratio)
 
-    print(f"Training schedule:")
-    print(f"  Steps per epoch: {steps_per_epoch}")
-    print(f"  Total steps: {total_steps}")
-    print(f"  Warmup steps: {warmup_steps} ({warmup_ratio*100:.0f}% of total)")
+    if not is_kfold:
+        # Show detailed schedule for single model training
+        print(f"Training schedule:")
+        print(f"  Steps per epoch: {steps_per_epoch}")
+        print(f"  Total steps: {total_steps}")
+        print(f"  Warmup steps: {warmup_steps} ({warmup_ratio*100:.0f}% of total)")
+
+    # Adjust logging frequency for K-Fold (less noise)
+    logging_steps = 50 if is_kfold else 10
 
     # Training arguments
     args = TrainingArguments(
@@ -433,7 +446,8 @@ def train_single_fold(
         weight_decay=train_cfg["weight_decay"],
         max_grad_norm=train_cfg["max_grad_norm"],
         bf16=True,
-        logging_steps=10,
+        logging_steps=logging_steps,
+        logging_first_step=False,
         eval_strategy="steps",
         eval_steps=train_cfg["eval_steps"],
         save_strategy="steps",
@@ -446,6 +460,7 @@ def train_single_fold(
         dataloader_pin_memory=True,
         remove_unused_columns=False,
         report_to="none",
+        disable_tqdm=is_kfold,  # Cleaner output for K-Fold
     )
 
     # Callbacks
@@ -462,25 +477,32 @@ def train_single_fold(
     )
 
     # Train
-    print(f"Starting training for {fold_str}...")
+    if is_kfold:
+        print(f"🚀 Training {fold_str}... (progress bars disabled for cleaner K-Fold output)")
+    else:
+        print(f"🚀 Starting training...")
+
     trainer.train()
 
     # Save final
     final_dir = fold_output_dir / "final"
     trainer.save_model(str(final_dir))
     processor.save_pretrained(str(final_dir))
-    print(f"Saved final model to {final_dir}")
 
     # Save best
     best_dir = fold_output_dir / "best"
     best_dir.mkdir(exist_ok=True)
     trainer.save_model(str(best_dir))
     processor.save_pretrained(str(best_dir))
-    print(f"Saved best model to {best_dir}")
 
     # Get best eval loss
     best_metrics = trainer.state.best_metric
-    print(f"{fold_str} - Best eval_loss: {best_metrics:.4f}\n")
+
+    # Clean summary output
+    print(f"\n{'='*70}")
+    print(f"✅ {fold_str} Complete - Best eval_loss: {best_metrics:.4f}")
+    print(f"   Saved to: {best_dir}")
+    print(f"{'='*70}\n")
 
     return best_metrics
 
@@ -511,8 +533,12 @@ def train(cfg: dict):
     if k_folds > 1:
         # K-Fold Cross-Validation
         print(f"\n{'='*70}")
-        print(f"K-FOLD CROSS-VALIDATION: {k_folds} folds")
-        print(f"Total samples: {len(df)}")
+        print(f"🔄 K-FOLD CROSS-VALIDATION")
+        print(f"{'='*70}")
+        print(f"  Folds: {k_folds}")
+        print(f"  Total samples: {len(df)}")
+        print(f"  Per fold: ~{len(df)//k_folds * (k_folds-1)} train, ~{len(df)//k_folds} val")
+        print(f"  Progress bars: Disabled for cleaner output")
         print(f"{'='*70}\n")
 
         skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=data_cfg["seed"])
@@ -541,16 +567,22 @@ def train(cfg: dict):
             })
 
         # Print summary
-        print(f"\n{'='*70}")
-        print("K-FOLD RESULTS SUMMARY")
-        print(f"{'='*70}")
+        print(f"\n\n{'='*70}")
+        print("🎯 K-FOLD CROSS-VALIDATION RESULTS")
+        print(f"{'='*70}\n")
+
         for r in fold_results:
-            print(f"Fold {r['fold']}: eval_loss={r['eval_loss']:.4f} "
-                  f"(train={r['train_samples']}, val={r['val_samples']})")
+            print(f"  Fold {r['fold']}/5: eval_loss = {r['eval_loss']:.4f}")
 
         avg_loss = np.mean([r['eval_loss'] for r in fold_results])
         std_loss = np.std([r['eval_loss'] for r in fold_results])
-        print(f"\nAverage eval_loss: {avg_loss:.4f} ± {std_loss:.4f}")
+
+        print(f"\n  {'─'*66}")
+        print(f"  📊 Average:  {avg_loss:.4f} ± {std_loss:.4f}")
+        print(f"  📈 Best:     {min(r['eval_loss'] for r in fold_results):.4f} (Fold {min(fold_results, key=lambda x: x['eval_loss'])['fold']})")
+        print(f"  📉 Worst:    {max(r['eval_loss'] for r in fold_results):.4f} (Fold {max(fold_results, key=lambda x: x['eval_loss'])['fold']})")
+        print(f"\n{'='*70}")
+        print(f"✅ All folds complete! Use --kfold flag for ensemble inference.")
         print(f"{'='*70}\n")
 
         # Save summary
@@ -561,7 +593,9 @@ def train(cfg: dict):
             for r in fold_results:
                 f.write(f"Fold {r['fold']}: eval_loss={r['eval_loss']:.4f}\n")
             f.write(f"\nAverage: {avg_loss:.4f} ± {std_loss:.4f}\n")
-        print(f"Saved summary to {summary_file}")
+            f.write(f"Best: {min(r['eval_loss'] for r in fold_results):.4f}\n")
+            f.write(f"Worst: {max(r['eval_loss'] for r in fold_results):.4f}\n")
+        print(f"📄 Summary saved to: {summary_file}\n")
 
     else:
         # Simple train/val split (single model)
