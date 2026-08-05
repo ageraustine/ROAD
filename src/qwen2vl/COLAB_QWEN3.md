@@ -7,9 +7,17 @@ Copy and paste these cells into your Colab notebook to train Qwen3-VL-2B.
 ## Cell 1: Setup and Compatibility Test
 
 ```python
-# Install bleeding-edge transformers for Qwen3-VL support
+# CRITICAL: Install bleeding-edge transformers for Qwen3VLForConditionalGeneration
 print("📦 Upgrading transformers for Qwen3-VL support...")
+print("⚠️  This is REQUIRED - Qwen3-VL needs latest transformers from source\n")
 !pip install -q --upgrade git+https://github.com/huggingface/transformers
+
+# IMPORTANT: Restart runtime after install for changes to take effect
+print("\n" + "="*70)
+print("⚠️  RESTART RUNTIME NOW for transformers upgrade to take effect!")
+print("   Go to: Runtime > Restart Runtime")
+print("   Then re-run this cell and continue to next cell")
+print("="*70)
 
 # Navigate to repo
 %cd /content/ROAD/src/qwen2vl/
@@ -20,6 +28,7 @@ print("\n🧪 Testing Qwen3-VL-2B compatibility...\n")
 
 print("\n" + "="*70)
 print("If test passed, proceed to next cell to start training")
+print("If test failed, RESTART RUNTIME and re-run this cell")
 print("="*70)
 ```
 

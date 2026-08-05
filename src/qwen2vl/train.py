@@ -407,6 +407,19 @@ def train_single_fold(
     # Collators
     train_collator = OCRCollator(processor, train_cfg["max_pixels"], augmenter)
 
+    # Calculate warmup steps (for compatibility with older transformers)
+    steps_per_epoch = len(train_dataset) // (
+        train_cfg["batch_size"] * train_cfg["gradient_accumulation_steps"]
+    )
+    total_steps = steps_per_epoch * train_cfg["epochs"]
+    warmup_ratio = train_cfg.get("warmup_ratio", 0.1)
+    warmup_steps = int(total_steps * warmup_ratio)
+
+    print(f"Training schedule:")
+    print(f"  Steps per epoch: {steps_per_epoch}")
+    print(f"  Total steps: {total_steps}")
+    print(f"  Warmup steps: {warmup_steps} ({warmup_ratio*100:.0f}% of total)")
+
     # Training arguments
     args = TrainingArguments(
         output_dir=str(fold_output_dir),
@@ -415,7 +428,7 @@ def train_single_fold(
         gradient_accumulation_steps=train_cfg["gradient_accumulation_steps"],
         num_train_epochs=train_cfg["epochs"],
         learning_rate=train_cfg["learning_rate"],
-        warmup_ratio=train_cfg["warmup_ratio"],
+        warmup_steps=warmup_steps,  # Use warmup_steps instead of warmup_ratio
         lr_scheduler_type=train_cfg["lr_scheduler"],
         weight_decay=train_cfg["weight_decay"],
         max_grad_norm=train_cfg["max_grad_norm"],
