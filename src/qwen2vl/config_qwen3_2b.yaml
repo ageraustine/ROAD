@@ -1,0 +1,97 @@
+# Qwen3-VL-2B OCR Training Config - Competition Setup
+# Hardware: A100 80GB
+# Architecture: Qwen3-VL with improved OCR capabilities
+
+model:
+  name: "Qwen/Qwen3-VL-2B-Instruct"
+
+  # Flash Attention (optional - improves speed/memory)
+  # Set to false if installation fails or unavailable
+  # Auto-fallback to standard attention if Flash Attention errors
+  use_flash_attention: true
+
+  use_quantization: false  # full precision on A100 80GB
+  torch_dtype: "bfloat16"
+
+data:
+  train_csv: "dataset/Train.csv"
+  test_csv: "dataset/Test.csv"
+  image_dir: "dataset/images"
+
+  # K-Fold Cross-Validation (for limited datasets)
+  # Set k_folds=1 to use simple train/val split instead
+  k_folds: 5  # 5-fold CV - trains 5 models, uses all data efficiently
+
+  # Only used if k_folds=1 (simple split mode)
+  val_split: 0.1  # 10% = ~410 samples
+  seed: 42
+
+  # Note: K-Fold uses stratified split by text length to ensure
+  # each fold has similar length distribution.
+
+training:
+  output_dir: "outputs/qwen3-2b-kfold"  # Qwen3-VL-2B with K-Fold
+
+  # Batch - Larger than 7B (2B uses less VRAM)
+  batch_size: 8  # increased from 4 (2B model = half VRAM)
+  gradient_accumulation_steps: 2  # effective batch = 16 (same as 7B)
+
+  # Schedule - More epochs for smaller model
+  epochs: 7  # increased from 5 - smaller model trains faster
+  learning_rate: 3.0e-5  # higher than 7B - smaller model needs stronger signal
+  warmup_ratio: 0.15
+  lr_scheduler: "cosine"
+  weight_decay: 0.01  # lighter regularization for smaller model
+  max_grad_norm: 1.0
+
+  # LoRA - Balanced for 2B model
+  lora_r: 96  # between 64-128 - good for 2B
+  lora_alpha: 192  # maintain 2:1 ratio
+  lora_dropout: 0.05
+  lora_target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+  # Image - Higher resolution than 7B (more VRAM available)
+  max_pixels: 3000000  # ~1732x1732 - increased from 2.5M
+
+  # Eval & Save
+  eval_steps: 100
+  save_steps: 100
+  save_total_limit: 3
+  metric_for_best_model: "eval_loss"
+
+  # Workers
+  num_workers: 8
+
+augmentation:
+  enabled: true
+  # Conservative approach for historical documents
+  # Qwen3-VL is robust to blur/tilt, but avoid adding artificial degradation
+  p_blur: 0.0       # Disabled - documents already degraded, Qwen3 handles blur well
+  p_noise: 0.0      # Disabled - documents already have paper texture
+  p_brightness: 0.3 # Realistic scan exposure variations
+  p_contrast: 0.3   # Realistic ink fade variations
+  p_rotate: 0.1     # Small alignment issues (Qwen3 handles tilt natively)
+  max_rotation: 1   # ±1 degree (conservative)
+
+inference:
+  # Use "best" checkpoint (saved at lowest eval_loss during training)
+  # For K-Fold: use --kfold flag to ensemble all fold_*/best/ checkpoints
+  checkpoint: "outputs/qwen3-2b-kfold/fold_1/best"  # default to fold 1
+  output_csv: "submission.csv"
+  max_new_tokens: 256
+  num_beams: 5
+  batch_size: 2  # can be larger for 2B model
+
+# Notes on Qwen3-VL-2B Advantages:
+# - Improved OCR: 32 languages, robust to blur/tilt, better ancient characters
+# - DeepStack: Captures fine-grained details in degraded text
+# - 3x faster training: ~1h/fold vs 3h for 7B
+# - Lower VRAM: Can use larger batch size and higher resolution
+# - Architecture improvements may overcome parameter disadvantage for OCR tasks

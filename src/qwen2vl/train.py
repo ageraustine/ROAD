@@ -18,7 +18,7 @@ from datasets import Dataset
 from tqdm import tqdm
 
 from transformers import (
-    Qwen2VLForConditionalGeneration,
+    AutoModelForVision2Seq,
     AutoProcessor,
     TrainingArguments,
     Trainer,
@@ -281,7 +281,7 @@ def setup_model(cfg: dict):
         try:
             # Try with Flash Attention 2
             model_kwargs["attn_implementation"] = "flash_attention_2"
-            model = Qwen2VLForConditionalGeneration.from_pretrained(
+            model = AutoModelForVision2Seq.from_pretrained(
                 model_cfg["name"],
                 **model_kwargs,
             )
@@ -291,14 +291,14 @@ def setup_model(cfg: dict):
             print("  Falling back to standard attention...")
             # Fallback to standard attention
             model_kwargs.pop("attn_implementation", None)
-            model = Qwen2VLForConditionalGeneration.from_pretrained(
+            model = AutoModelForVision2Seq.from_pretrained(
                 model_cfg["name"],
                 **model_kwargs,
             )
             print("✓ Using standard attention")
     else:
         print("Flash Attention 2 disabled in config")
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
+        model = AutoModelForVision2Seq.from_pretrained(
             model_cfg["name"],
             **model_kwargs,
         )

@@ -14,7 +14,7 @@ import pandas as pd
 from PIL import Image
 from tqdm import tqdm
 
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from transformers import AutoModelForVision2Seq, AutoProcessor
 from peft import PeftModel
 
 # ─────────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ def load_model(checkpoint_path: str, model_name: str, use_flash: bool = True):
         try:
             # Try with Flash Attention 2
             model_kwargs["attn_implementation"] = "flash_attention_2"
-            base_model = Qwen2VLForConditionalGeneration.from_pretrained(
+            base_model = AutoModelForVision2Seq.from_pretrained(
                 model_name,
                 **model_kwargs,
             )
@@ -92,14 +92,14 @@ def load_model(checkpoint_path: str, model_name: str, use_flash: bool = True):
             print("  Falling back to standard attention...")
             # Fallback to standard attention
             model_kwargs.pop("attn_implementation", None)
-            base_model = Qwen2VLForConditionalGeneration.from_pretrained(
+            base_model = AutoModelForVision2Seq.from_pretrained(
                 model_name,
                 **model_kwargs,
             )
             print("✓ Using standard attention")
     else:
         print("Flash Attention 2 disabled")
-        base_model = Qwen2VLForConditionalGeneration.from_pretrained(
+        base_model = AutoModelForVision2Seq.from_pretrained(
             model_name,
             **model_kwargs,
         )
