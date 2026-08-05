@@ -49,30 +49,84 @@ Use `train_colab.ipynb` in the repo root - it handles everything automatically:
 
 ## Training
 
+### K-Fold Cross-Validation (Recommended for Competition)
+
+**For maximum performance on limited data (4,098 samples), use 5-Fold CV:**
+
 ```bash
+# config.yaml: set k_folds=5
+python train.py
+```
+
+**How it works:**
+- Trains 5 models, each on 80% data (3,278 samples), validates on 20% (820 samples)
+- Every sample used for training in 4 folds, validation in 1 fold
+- More reliable metrics (averaged across 5 folds)
+- Better final predictions through ensemble
+
+**Expected outputs:**
+```
+outputs/qwen2vl-7b-run3/
+├── fold_1/
+│   ├── best/      # Best checkpoint for fold 1
+│   └── final/
+├── fold_2/best/   # Best checkpoint for fold 2
+├── fold_3/best/
+├── fold_4/best/
+├── fold_5/best/
+└── kfold_summary.txt  # Summary of all folds
+```
+
+**Training time:** ~15-17 hours on A100 80GB (5 folds × 3 hours each)
+
+**Memory usage:** ~45-55GB VRAM per fold
+
+### Simple Train/Val Split (Faster Iteration)
+
+**For quick testing, use simple 90/10 split:**
+
+```bash
+# config.yaml: set k_folds=1
 python train.py
 ```
 
 **Expected outputs:**
-- `outputs/qwen2vl-7b-run2/best/` - Best checkpoint by eval loss (use this!)
-- `outputs/qwen2vl-7b-run2/final/` - Final checkpoint
+- `outputs/qwen2vl-7b-run3/best/` - Best checkpoint by eval loss
+- `outputs/qwen2vl-7b-run3/final/` - Final checkpoint
 
-**Training time:** ~2 hours on A100 80GB (3 epochs, 4098 samples, no Flash Attention)
+**Training time:** ~3 hours on A100 80GB (5 epochs, run3 config)
 
-**Memory usage:** ~45-55GB VRAM
-
-**Config Optimization:**
-Current config is tuned to prevent overfitting observed in initial training runs:
-- Reduced epochs: 3 (best model typically found at epoch 1-2)
-- Increased regularization: weight_decay=0.05, lora_dropout=0.1
-- More augmentation: higher probabilities for blur, noise, brightness, contrast
+**Config Optimization (Run 3):**
+Increased capacity to improve from Run 2's eval_loss=0.67:
+- LoRA rank: 128 (doubled from 64)
+- Reduced regularization: weight_decay=0.02, lora_dropout=0.05
+- More training: 5 epochs (with early stopping)
+- Higher resolution: 2.5M pixels
 
 See `TRAINING_NOTES.md` for detailed analysis of training runs and tuning decisions.
 
 ## Inference
 
+### K-Fold Ensemble (Best Performance)
+
 ```bash
-# Use best checkpoint
+# Ensemble predictions from all 5 folds
+python inference.py --kfold
+
+# Uses all fold checkpoints from config.yaml output_dir
+# e.g., outputs/qwen2vl-7b-run3/fold_*/best/
+```
+
+**How it works:**
+- Loads all 5 fold models
+- Each model predicts on test set
+- Combines predictions (majority vote for each character position)
+- **Expected improvement:** 1-3% better than single model
+
+### Single Model Inference
+
+```bash
+# Use best checkpoint from config
 python inference.py
 
 # Or specify custom checkpoint

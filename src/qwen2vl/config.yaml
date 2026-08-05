@@ -17,12 +17,16 @@ data:
   test_csv: "dataset/Test.csv"
   image_dir: "dataset/images"
 
-  # Validation split (stratified by text length for small datasets)
+  # K-Fold Cross-Validation (for limited datasets)
+  # Set k_folds=1 to use simple train/val split instead
+  k_folds: 5  # 5-fold CV - trains 5 models, uses all data efficiently
+
+  # Only used if k_folds=1 (simple split mode)
   val_split: 0.1  # 10% = ~410 samples (balanced for 4K dataset)
   seed: 42
 
-  # Note: train.py uses stratified split by text length to ensure
-  # validation set has similar length distribution to training set.
+  # Note: K-Fold uses stratified split by text length to ensure
+  # each fold has similar length distribution.
   # This is critical for reliable WER/CER metrics on small datasets.
 
 training:

@@ -13,7 +13,7 @@ import torch
 import pandas as pd
 import numpy as np
 from PIL import Image, ImageFilter, ImageEnhance
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from datasets import Dataset
 from tqdm import tqdm
 
@@ -332,42 +332,26 @@ def setup_model(cfg: dict):
     return model, processor
 
 
-def train(cfg: dict):
-    """Main training function."""
-
-    data_cfg = cfg["data"]
+def train_single_fold(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    image_dir: Path,
+    fold_output_dir: Path,
+    cfg: dict,
+    fold_num: int = None,
+):
+    """Train a single fold or single model."""
     train_cfg = cfg["training"]
     aug_cfg = cfg.get("augmentation", {})
 
-    # Paths
-    train_csv = REPO_ROOT / data_cfg["train_csv"]
-    image_dir = REPO_ROOT / data_cfg["image_dir"]
-    output_dir = REPO_ROOT / train_cfg["output_dir"]
-    output_dir.mkdir(parents=True, exist_ok=True)
+    fold_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load data
-    print(f"Loading data from {train_csv}")
-    df = pd.read_csv(train_csv)
+    fold_str = f"Fold {fold_num}" if fold_num is not None else "Model"
+    print(f"\n{'='*70}")
+    print(f"{fold_str} - Train: {len(train_df)}, Val: {len(val_df)}")
+    print(f"{'='*70}\n")
 
-    # Stratified train/val split by text length
-    # Ensures validation set has similar length distribution to training
-    print("Creating stratified split by text length...")
-    df['text_length'] = df['Target'].str.len()
-    df['length_bin'] = pd.qcut(df['text_length'], q=5, labels=False, duplicates='drop')
-
-    train_df, val_df = train_test_split(
-        df,
-        test_size=data_cfg["val_split"],
-        stratify=df['length_bin'],
-        random_state=data_cfg["seed"],
-    )
-
-    # Drop helper columns
-    train_df = train_df.drop(columns=['text_length', 'length_bin'])
-    val_df = val_df.drop(columns=['text_length', 'length_bin'])
-
-    print(f"Train: {len(train_df)}, Val: {len(val_df)}")
-
+    # Build datasets
     train_dataset = build_dataset(train_df, image_dir)
     val_dataset = build_dataset(val_df, image_dir)
 
@@ -379,11 +363,10 @@ def train(cfg: dict):
 
     # Collators
     train_collator = OCRCollator(processor, train_cfg["max_pixels"], augmenter)
-    val_collator = OCRCollator(processor, train_cfg["max_pixels"], None)  # no aug for val
 
     # Training arguments
     args = TrainingArguments(
-        output_dir=str(output_dir),
+        output_dir=str(fold_output_dir),
         per_device_train_batch_size=train_cfg["batch_size"],
         per_device_eval_batch_size=train_cfg["batch_size"],
         gradient_accumulation_steps=train_cfg["gradient_accumulation_steps"],
@@ -410,7 +393,7 @@ def train(cfg: dict):
     )
 
     # Callbacks
-    callbacks = [SaveBestCallback(output_dir)]
+    callbacks = [SaveBestCallback(fold_output_dir)]
 
     # Trainer
     trainer = Trainer(
@@ -422,25 +405,132 @@ def train(cfg: dict):
         callbacks=callbacks,
     )
 
-    # Use different collator for eval
-    trainer.data_collator = train_collator
-
     # Train
-    print("Starting training...")
+    print(f"Starting training for {fold_str}...")
     trainer.train()
 
     # Save final
-    final_dir = output_dir / "final"
+    final_dir = fold_output_dir / "final"
     trainer.save_model(str(final_dir))
     processor.save_pretrained(str(final_dir))
     print(f"Saved final model to {final_dir}")
 
     # Save best
-    best_dir = output_dir / "best"
+    best_dir = fold_output_dir / "best"
     best_dir.mkdir(exist_ok=True)
     trainer.save_model(str(best_dir))
     processor.save_pretrained(str(best_dir))
     print(f"Saved best model to {best_dir}")
+
+    # Get best eval loss
+    best_metrics = trainer.state.best_metric
+    print(f"{fold_str} - Best eval_loss: {best_metrics:.4f}\n")
+
+    return best_metrics
+
+
+def train(cfg: dict):
+    """Main training function with K-Fold CV support."""
+
+    data_cfg = cfg["data"]
+    train_cfg = cfg["training"]
+
+    # Paths
+    train_csv = REPO_ROOT / data_cfg["train_csv"]
+    image_dir = REPO_ROOT / data_cfg["image_dir"]
+    base_output_dir = REPO_ROOT / train_cfg["output_dir"]
+
+    # Load data
+    print(f"Loading data from {train_csv}")
+    df = pd.read_csv(train_csv)
+
+    # Prepare stratification by text length
+    print("Preparing stratified splits by text length...")
+    df['text_length'] = df['Target'].str.len()
+    df['length_bin'] = pd.qcut(df['text_length'], q=5, labels=False, duplicates='drop')
+
+    # K-Fold or simple split
+    k_folds = data_cfg.get("k_folds", 1)
+
+    if k_folds > 1:
+        # K-Fold Cross-Validation
+        print(f"\n{'='*70}")
+        print(f"K-FOLD CROSS-VALIDATION: {k_folds} folds")
+        print(f"Total samples: {len(df)}")
+        print(f"{'='*70}\n")
+
+        skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=data_cfg["seed"])
+        fold_results = []
+
+        for fold_num, (train_idx, val_idx) in enumerate(skf.split(df, df['length_bin']), 1):
+            train_df = df.iloc[train_idx].drop(columns=['text_length', 'length_bin']).copy()
+            val_df = df.iloc[val_idx].drop(columns=['text_length', 'length_bin']).copy()
+
+            fold_output_dir = base_output_dir / f"fold_{fold_num}"
+
+            best_loss = train_single_fold(
+                train_df=train_df,
+                val_df=val_df,
+                image_dir=image_dir,
+                fold_output_dir=fold_output_dir,
+                cfg=cfg,
+                fold_num=fold_num,
+            )
+
+            fold_results.append({
+                'fold': fold_num,
+                'eval_loss': best_loss,
+                'train_samples': len(train_df),
+                'val_samples': len(val_df),
+            })
+
+        # Print summary
+        print(f"\n{'='*70}")
+        print("K-FOLD RESULTS SUMMARY")
+        print(f"{'='*70}")
+        for r in fold_results:
+            print(f"Fold {r['fold']}: eval_loss={r['eval_loss']:.4f} "
+                  f"(train={r['train_samples']}, val={r['val_samples']})")
+
+        avg_loss = np.mean([r['eval_loss'] for r in fold_results])
+        std_loss = np.std([r['eval_loss'] for r in fold_results])
+        print(f"\nAverage eval_loss: {avg_loss:.4f} ± {std_loss:.4f}")
+        print(f"{'='*70}\n")
+
+        # Save summary
+        summary_file = base_output_dir / "kfold_summary.txt"
+        with open(summary_file, 'w') as f:
+            f.write(f"K-Fold Cross-Validation Results ({k_folds} folds)\n")
+            f.write(f"{'='*70}\n\n")
+            for r in fold_results:
+                f.write(f"Fold {r['fold']}: eval_loss={r['eval_loss']:.4f}\n")
+            f.write(f"\nAverage: {avg_loss:.4f} ± {std_loss:.4f}\n")
+        print(f"Saved summary to {summary_file}")
+
+    else:
+        # Simple train/val split (single model)
+        print(f"\n{'='*70}")
+        print("SIMPLE TRAIN/VAL SPLIT (Single Model)")
+        print(f"{'='*70}\n")
+
+        train_df, val_df = train_test_split(
+            df,
+            test_size=data_cfg["val_split"],
+            stratify=df['length_bin'],
+            random_state=data_cfg["seed"],
+        )
+
+        train_df = train_df.drop(columns=['text_length', 'length_bin'])
+        val_df = val_df.drop(columns=['text_length', 'length_bin'])
+
+        train_single_fold(
+            train_df=train_df,
+            val_df=val_df,
+            image_dir=image_dir,
+            fold_output_dir=base_output_dir,
+            cfg=cfg,
+            fold_num=None,
+        )
 
 
 # ─────────────────────────────────────────────────────────────

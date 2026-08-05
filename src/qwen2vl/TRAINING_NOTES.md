@@ -123,12 +123,88 @@ If Run 2 underfits (train/eval both high):
 
 ---
 
+## Run 3 Config (Increased Capacity + K-Fold CV)
+
+### Changes from Run 2
+
+| Parameter | Run 2 | Run 3 | Reason |
+|-----------|-------|-------|--------|
+| **lora_r** | 64 | **128** | 2x capacity for better learning |
+| **lora_alpha** | 128 | **256** | Maintain 2:1 ratio with rank |
+| **weight_decay** | 0.05 | **0.02** | Reduce regularization (was too strong) |
+| **lora_dropout** | 0.1 | **0.05** | Reduce dropout |
+| **epochs** | 3 | **5** | More training time with early stopping |
+| **learning_rate** | 2e-5 | **1.5e-5** | More stable for larger rank |
+| **warmup_ratio** | 0.1 | **0.15** | Longer warmup |
+| **max_pixels** | 2.016M | **2.5M** | Higher resolution (~1581x1581) |
+| **k_folds** | N/A | **5** | K-Fold CV for limited data |
+
+### K-Fold Cross-Validation
+
+**Setup (config.yaml):**
+```yaml
+data:
+  k_folds: 5  # 5-fold CV
+  # val_split only used if k_folds=1
+```
+
+**How it works:**
+- Trains 5 models using stratified k-fold split by text length
+- Each fold: 80% train (~3,278 samples), 20% val (~820 samples)
+- Every sample used for training in 4 folds, validation in 1 fold
+- More efficient use of limited data (4,098 samples)
+
+**Training:**
+```bash
+python train.py  # trains all 5 folds automatically
+```
+
+**Outputs:**
+```
+outputs/qwen2vl-7b-run3/
+├── fold_1/best/
+├── fold_2/best/
+├── fold_3/best/
+├── fold_4/best/
+├── fold_5/best/
+└── kfold_summary.txt
+```
+
+**Inference (Ensemble):**
+```bash
+python inference.py --kfold
+```
+
+- Loads all 5 fold models
+- Each predicts on test set
+- Character-level majority voting for ensemble
+- Expected improvement: 1-3% over single model
+
+**Expected Run 3 Performance:**
+- Target: eval_loss **0.55-0.60** (vs Run 2's 0.67)
+- With ensemble: **WER ~8-10%**, **CER ~3-4%**
+- Training time: ~15-17 hours (5 folds × 3 hours)
+
+---
+
 ## Competition Strategy
 
-**For best submission:**
-1. Train Run 2 (this config)
-2. Train Run 1 again with different seed (diversity)
-3. Ensemble both models (weighted average predictions)
-4. Apply post-processing (spell check, common phrases)
+**Updated strategy with K-Fold CV:**
 
-Expected combined improvement: 2-3% over single model.
+**Phase 1 (Current):**
+1. ✓ Run 1: Baseline (eval_loss=0.7017)
+2. ✓ Run 2: Anti-overfitting (eval_loss=0.67)
+3. **Run 3: Increased capacity + K-Fold CV (target: 0.55-0.60)**
+
+**Phase 2 (For final submission):**
+1. Train Run 3 with K-Fold CV (5 models)
+2. Generate ensemble predictions with `--kfold` flag
+3. Optional: Post-processing (spell check, language model)
+
+**Why K-Fold > Multi-Seed:**
+- Uses all data more efficiently (every sample in train & val)
+- More diverse models (different train/val splits)
+- Better ensemble (5 models vs 3 seeds)
+- More reliable metrics (averaged across 5 folds)
+
+Expected combined improvement: **2-4% over single model**
