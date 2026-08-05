@@ -12,11 +12,21 @@ Usage:
 """
 
 import torch
-from transformers import AutoModelForVision2Seq, AutoProcessor
 from PIL import Image
 import numpy as np
 
 MODEL_NAME = "Qwen/Qwen3-VL-2B-Instruct"
+
+# Try importing Qwen3-VL specific class
+try:
+    from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+    print("✓ Qwen3VLForConditionalGeneration available")
+    QWEN3_AVAILABLE = True
+except ImportError:
+    print("⚠️  Qwen3VLForConditionalGeneration not available")
+    print("   Attempting fallback to AutoModelForVision2Seq...")
+    from transformers import AutoModelForVision2Seq as Qwen3VLForConditionalGeneration, AutoProcessor
+    QWEN3_AVAILABLE = False
 
 def test_compatibility():
     print("="*70)
@@ -32,12 +42,21 @@ def test_compatibility():
     # Try loading model
     print(f"\nLoading model: {MODEL_NAME}")
     try:
-        model = AutoModelForVision2Seq.from_pretrained(
-            MODEL_NAME,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
-        )
+        # Use Qwen3 official loading style
+        if QWEN3_AVAILABLE:
+            model = Qwen3VLForConditionalGeneration.from_pretrained(
+                MODEL_NAME,
+                dtype="auto",  # Qwen3 uses dtype="auto"
+                device_map="auto",
+                trust_remote_code=True,
+            )
+        else:
+            model = Qwen3VLForConditionalGeneration.from_pretrained(
+                MODEL_NAME,
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+                trust_remote_code=True,
+            )
         print("✓ Model loaded successfully")
 
         if torch.cuda.is_available():
@@ -72,37 +91,38 @@ def test_compatibility():
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Describe this image."},
                     {"type": "image", "image": dummy_img},
+                    {"type": "text", "text": "Describe this image."},
                 ],
             }
         ]
 
-        prompt = processor.apply_chat_template(
+        # Qwen3 style: apply_chat_template with tokenize=True
+        inputs = processor.apply_chat_template(
             messages,
-            tokenize=False,
+            tokenize=True,
             add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt"
         )
-
-        inputs = processor(
-            text=[prompt],
-            images=[dummy_img],
-            return_tensors="pt",
-            padding=True,
-        )
-
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        inputs = inputs.to(model.device)
 
         with torch.inference_mode():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=50,
-                do_sample=False,
-            )
+            generated_ids = model.generate(**inputs, max_new_tokens=50)
 
-        decoded = processor.batch_decode(outputs, skip_special_tokens=True)[0]
+        # Qwen3 style: trim input from output before decoding
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+
+        output_text = processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False
+        )
+
         print(f"✓ Inference successful")
-        print(f"  Sample output: {decoded[:100]}...")
+        print(f"  Sample output: {output_text[0][:100] if output_text else 'N/A'}...")
 
     except Exception as e:
         print(f"✗ Inference test failed: {e}")

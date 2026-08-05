@@ -18,13 +18,29 @@ from datasets import Dataset
 from tqdm import tqdm
 
 from transformers import (
-    AutoModelForVision2Seq,
     AutoProcessor,
     TrainingArguments,
     Trainer,
     TrainerCallback,
 )
 from peft import LoraConfig, get_peft_model
+
+# Support both Qwen2-VL and Qwen3-VL
+try:
+    from transformers import Qwen3VLForConditionalGeneration
+    QWEN3_AVAILABLE = True
+except ImportError:
+    QWEN3_AVAILABLE = False
+
+try:
+    from transformers import Qwen2VLForConditionalGeneration
+    QWEN2_AVAILABLE = True
+except ImportError:
+    QWEN2_AVAILABLE = False
+
+# Fallback to generic class
+if not QWEN3_AVAILABLE and not QWEN2_AVAILABLE:
+    from transformers import AutoModelForVision2Seq
 
 # ─────────────────────────────────────────────────────────────
 # CONSTANTS
@@ -262,27 +278,54 @@ def setup_model(cfg: dict):
     model_cfg = cfg["model"]
     train_cfg = cfg["training"]
 
+    model_name = model_cfg["name"]
+
+    # Detect model type
+    is_qwen3 = "Qwen3" in model_name or "qwen3" in model_name.lower()
+    is_qwen2 = "Qwen2" in model_name or "qwen2" in model_name.lower()
+
     # Determine dtype
-    dtype = torch.bfloat16 if model_cfg.get("torch_dtype") == "bfloat16" else torch.float16
+    dtype_config = model_cfg.get("torch_dtype", "bfloat16")
+    if is_qwen3:
+        # Qwen3 official example uses dtype="auto"
+        dtype = "auto"
+    else:
+        dtype = torch.bfloat16 if dtype_config == "bfloat16" else torch.float16
 
     # Load model
     model_kwargs = {
-        "torch_dtype": dtype,
         "device_map": "auto",
         "trust_remote_code": True,
     }
 
+    # Set dtype based on model
+    if is_qwen3:
+        model_kwargs["dtype"] = dtype
+    else:
+        model_kwargs["torch_dtype"] = dtype
+
     # Flash attention (optional)
     use_flash = model_cfg.get("use_flash_attention", True)
 
-    print(f"Loading model: {model_cfg['name']}")
+    print(f"Loading model: {model_name}")
+
+    # Select appropriate model class
+    if is_qwen3 and QWEN3_AVAILABLE:
+        model_class = Qwen3VLForConditionalGeneration
+        print("Using Qwen3VLForConditionalGeneration")
+    elif is_qwen2 and QWEN2_AVAILABLE:
+        model_class = Qwen2VLForConditionalGeneration
+        print("Using Qwen2VLForConditionalGeneration")
+    else:
+        model_class = AutoModelForVision2Seq
+        print("Using AutoModelForVision2Seq")
 
     if use_flash:
         try:
             # Try with Flash Attention 2
             model_kwargs["attn_implementation"] = "flash_attention_2"
-            model = AutoModelForVision2Seq.from_pretrained(
-                model_cfg["name"],
+            model = model_class.from_pretrained(
+                model_name,
                 **model_kwargs,
             )
             print("✓ Using Flash Attention 2")
@@ -291,15 +334,15 @@ def setup_model(cfg: dict):
             print("  Falling back to standard attention...")
             # Fallback to standard attention
             model_kwargs.pop("attn_implementation", None)
-            model = AutoModelForVision2Seq.from_pretrained(
-                model_cfg["name"],
+            model = model_class.from_pretrained(
+                model_name,
                 **model_kwargs,
             )
             print("✓ Using standard attention")
     else:
         print("Flash Attention 2 disabled in config")
-        model = AutoModelForVision2Seq.from_pretrained(
-            model_cfg["name"],
+        model = model_class.from_pretrained(
+            model_name,
             **model_kwargs,
         )
         print("✓ Using standard attention")

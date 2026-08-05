@@ -14,8 +14,25 @@ import pandas as pd
 from PIL import Image
 from tqdm import tqdm
 
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoProcessor
 from peft import PeftModel
+
+# Support both Qwen2-VL and Qwen3-VL
+try:
+    from transformers import Qwen3VLForConditionalGeneration
+    QWEN3_AVAILABLE = True
+except ImportError:
+    QWEN3_AVAILABLE = False
+
+try:
+    from transformers import Qwen2VLForConditionalGeneration
+    QWEN2_AVAILABLE = True
+except ImportError:
+    QWEN2_AVAILABLE = False
+
+# Fallback to generic class
+if not QWEN3_AVAILABLE and not QWEN2_AVAILABLE:
+    from transformers import AutoModelForVision2Seq
 
 # ─────────────────────────────────────────────────────────────
 # CONSTANTS
@@ -68,21 +85,40 @@ def clean_output(text: str) -> str:
 def load_model(checkpoint_path: str, model_name: str, use_flash: bool = True):
     """Load fine-tuned model with LoRA weights."""
 
-    dtype = torch.bfloat16
+    # Detect model type
+    is_qwen3 = "Qwen3" in model_name or "qwen3" in model_name.lower()
+    is_qwen2 = "Qwen2" in model_name or "qwen2" in model_name.lower()
 
+    # Setup kwargs based on model type
     model_kwargs = {
-        "torch_dtype": dtype,
         "device_map": "auto",
         "trust_remote_code": True,
     }
 
+    # Qwen3 uses dtype="auto", Qwen2 uses torch_dtype=torch.bfloat16
+    if is_qwen3:
+        model_kwargs["dtype"] = "auto"
+    else:
+        model_kwargs["torch_dtype"] = torch.bfloat16
+
     print(f"Loading base model: {model_name}")
+
+    # Select appropriate model class
+    if is_qwen3 and QWEN3_AVAILABLE:
+        model_class = Qwen3VLForConditionalGeneration
+        print("Using Qwen3VLForConditionalGeneration")
+    elif is_qwen2 and QWEN2_AVAILABLE:
+        model_class = Qwen2VLForConditionalGeneration
+        print("Using Qwen2VLForConditionalGeneration")
+    else:
+        model_class = AutoModelForVision2Seq
+        print("Using AutoModelForVision2Seq")
 
     if use_flash:
         try:
             # Try with Flash Attention 2
             model_kwargs["attn_implementation"] = "flash_attention_2"
-            base_model = AutoModelForVision2Seq.from_pretrained(
+            base_model = model_class.from_pretrained(
                 model_name,
                 **model_kwargs,
             )
@@ -92,14 +128,14 @@ def load_model(checkpoint_path: str, model_name: str, use_flash: bool = True):
             print("  Falling back to standard attention...")
             # Fallback to standard attention
             model_kwargs.pop("attn_implementation", None)
-            base_model = AutoModelForVision2Seq.from_pretrained(
+            base_model = model_class.from_pretrained(
                 model_name,
                 **model_kwargs,
             )
             print("✓ Using standard attention")
     else:
         print("Flash Attention 2 disabled")
-        base_model = AutoModelForVision2Seq.from_pretrained(
+        base_model = model_class.from_pretrained(
             model_name,
             **model_kwargs,
         )
@@ -131,38 +167,43 @@ def predict_single(
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": OCR_PROMPT},
                 {"type": "image", "image": image},
+                {"type": "text", "text": OCR_PROMPT},
             ],
         }
     ]
 
-    prompt = processor.apply_chat_template(
+    # Qwen3 style: tokenize=True in apply_chat_template
+    inputs = processor.apply_chat_template(
         messages,
-        tokenize=False,
+        tokenize=True,
         add_generation_prompt=True,
+        return_dict=True,
+        return_tensors="pt"
     )
-
-    inputs = processor(
-        text=[prompt],
-        images=[image],
-        return_tensors="pt",
-        padding=True,
-    )
-
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    inputs = inputs.to(model.device)
 
     with torch.inference_mode():
-        outputs = model.generate(
+        generated_ids = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
             num_beams=num_beams,
             do_sample=False,
-            pad_token_id=processor.tokenizer.pad_token_id,
         )
 
-    decoded = processor.batch_decode(outputs, skip_special_tokens=True)[0]
-    return clean_output(decoded)
+    # Trim input prompt from generated output (Qwen3 style)
+    generated_ids_trimmed = [
+        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+    ]
+
+    # Decode only the generated part
+    output_text = processor.batch_decode(
+        generated_ids_trimmed,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False
+    )
+
+    return clean_output(output_text[0] if output_text else "")
 
 
 # ─────────────────────────────────────────────────────────────
