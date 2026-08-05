@@ -26,24 +26,24 @@ data:
   # This is critical for reliable WER/CER metrics on small datasets.
 
 training:
-  output_dir: "outputs/qwen2vl-7b-run2"  # new run
+  output_dir: "outputs/qwen2vl-7b-run3"  # run3 - increased capacity
 
   # Batch
   batch_size: 4
   gradient_accumulation_steps: 4  # effective = 16
 
-  # Schedule (reduced epochs to prevent overfitting)
-  epochs: 3  # down from 5 - best model typically at epoch 1-2
-  learning_rate: 2.0e-5
-  warmup_ratio: 0.1
+  # Schedule (more epochs with early stopping)
+  epochs: 5  # increased from 3 - allow more training time
+  learning_rate: 1.5e-5  # slightly lower for stability with larger rank
+  warmup_ratio: 0.15  # longer warmup
   lr_scheduler: "cosine"
-  weight_decay: 0.05  # increased from 0.01 - stronger regularization
+  weight_decay: 0.02  # reduced from 0.05 - less regularization
   max_grad_norm: 1.0
 
-  # LoRA (increased dropout for regularization)
-  lora_r: 64
-  lora_alpha: 128
-  lora_dropout: 0.1  # increased from 0.05
+  # LoRA (increased capacity, reduced dropout)
+  lora_r: 128  # doubled from 64 - more capacity
+  lora_alpha: 256  # maintain 2:1 ratio
+  lora_dropout: 0.05  # reduced from 0.1 - less regularization
   lora_target_modules:
     - "q_proj"
     - "k_proj"
@@ -54,7 +54,7 @@ training:
     - "down_proj"
 
   # Image
-  max_pixels: 2016000  # ~1344x1500
+  max_pixels: 2500000  # ~1581x1581 - increased resolution for more detail
 
   # Eval & Save
   eval_steps: 100
@@ -78,8 +78,8 @@ augmentation:
 
 inference:
   # Use "best" checkpoint (saved at lowest eval_loss during training)
-  # For run1: best was at epoch ~1.7 with eval_loss=0.7017
-  checkpoint: "outputs/qwen2vl-7b-run2/best"  # update to match current run
+  # Run1: eval_loss=0.7017, Run2: eval_loss=0.67
+  checkpoint: "outputs/qwen2vl-7b-run3/best"  # update to match current run
   output_csv: "submission.csv"
   max_new_tokens: 256
   num_beams: 5
