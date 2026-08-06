@@ -20,6 +20,7 @@ import random
 import inspect
 import argparse
 import logging
+import warnings
 from pathlib import Path
 
 import yaml
@@ -28,6 +29,12 @@ import pandas as pd
 import numpy as np
 from PIL import Image, ImageFilter, ImageEnhance
 from sklearn.model_selection import train_test_split, StratifiedKFold
+
+# Suppress verbose warnings and progress bars
+warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
+warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 from datasets import Dataset
 from tqdm import tqdm
 
@@ -262,12 +269,10 @@ def build_dataset(df: pd.DataFrame, image_dir: Path, image_ext: str = ".jpg",
 
     n_dropped = sum(dropped.values())
     label = split_name or "dataset"
-    print(f"  {label}: {len(samples)} kept / {len(df)} rows", end="")
+    # Only print if samples were dropped
     if n_dropped:
         detail = ", ".join(f"{k}={v}" for k, v in dropped.items() if v)
-        print(f"  [DROPPED {n_dropped}: {detail}]")
-    else:
-        print()
+        print(f"  {label}: {len(samples)} kept ({n_dropped} dropped: {detail})")
 
     if not samples:
         raise RuntimeError(
@@ -572,7 +577,8 @@ def setup_model(cfg: dict):
     model_name = model_cfg["name"]
 
     model_class, family = resolve_model_class(model_name)
-    print(f"Loading {model_name}  ->  {model_class.__name__} (family={family})")
+    model_short_name = model_name.split("/")[-1]  # Just "Qwen3-VL-8B-Instruct"
+    print(f"Loading {model_short_name}...", end=" ", flush=True)
 
     if model_class.__name__ == "AutoModelForVision2Seq":
         raise RuntimeError(
@@ -604,13 +610,10 @@ def setup_model(cfg: dict):
         try:
             import flash_attn  # noqa: F401
             model_kwargs["attn_implementation"] = "flash_attention_2"
-            print("  attn: flash_attention_2")
         except ImportError:
-            print("  attn: sdpa (flash-attn not installed)")
             model_kwargs["attn_implementation"] = "sdpa"
     else:
         model_kwargs["attn_implementation"] = "sdpa"
-        print("  attn: sdpa (disabled in config)")
 
     model = model_class.from_pretrained(model_name, **model_kwargs)
     model.config.use_cache = False
@@ -642,13 +645,15 @@ def setup_model(cfg: dict):
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
 
-    # Fail loudly if the target_modules matched nothing (a typo yields a model
-    # with zero trainable params that trains happily and learns nothing).
+    # Count trainable params (fail loudly if zero)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if n_trainable == 0:
         raise RuntimeError("LoRA matched zero modules. Check lora_target_modules.")
+
+    n_total = sum(p.numel() for p in model.parameters())
+    trainable_pct = 100 * n_trainable / n_total
+    print(f"✓ ({n_trainable/1e6:.1f}M trainable / {n_total/1e6:.0f}M total = {trainable_pct:.2f}%)")
 
     return model, processor
 
@@ -660,8 +665,12 @@ def setup_model(cfg: dict):
 def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
                       fold_num=None, n_folds=None):
     """Train one fold (or a single model when fold_num is None). Returns metrics dict."""
-    logging.getLogger("transformers").setLevel(logging.WARNING)
-    logging.getLogger("accelerate").setLevel(logging.WARNING)
+    # Suppress verbose library logs
+    logging.getLogger("transformers").setLevel(logging.ERROR)
+    logging.getLogger("transformers.trainer").setLevel(logging.WARNING)
+    logging.getLogger("accelerate").setLevel(logging.ERROR)
+    logging.getLogger("torch").setLevel(logging.ERROR)
+    logging.getLogger("peft").setLevel(logging.WARNING)
 
     train_cfg = cfg["training"]
     data_cfg = cfg["data"]
@@ -669,10 +678,10 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
 
     fold_output_dir.mkdir(parents=True, exist_ok=True)
     is_kfold = fold_num is not None
-    fold_str = f"Fold {fold_num}/{n_folds}" if is_kfold else "Model"
+    fold_str = f"Fold {fold_num}/{n_folds}" if is_kfold else "Training"
 
     print(f"\n{'=' * 70}")
-    print(f"{fold_str} - Train: {len(train_df)}, Val: {len(val_df)}")
+    print(f"{fold_str} | Train: {len(train_df)} | Val: {len(val_df)}")
     print(f"{'=' * 70}")
 
     image_ext = data_cfg.get("image_ext", ".jpg")
@@ -704,8 +713,7 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
         epochs=train_cfg["epochs"],
         warmup_ratio=train_cfg.get("warmup_ratio", 0.1),
     )
-    print(f"  schedule: {steps_per_epoch} steps/epoch, {total_steps} total, "
-          f"{warmup_steps} warmup ({train_cfg.get('warmup_ratio', 0.1):.0%})")
+    print(f"Steps: {steps_per_epoch}/epoch × {train_cfg['epochs']} epochs = {total_steps} total")
 
     ta_kwargs = dict(
         output_dir=str(fold_output_dir),
@@ -803,11 +811,11 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
     if train_cfg.get("resume_from_checkpoint", True):
         resume_checkpoint = get_last_checkpoint(fold_output_dir)
         if resume_checkpoint:
-            print(f"\n⏩ Resuming from checkpoint: {Path(resume_checkpoint).name}")
+            print(f"⏩ Resuming from {Path(resume_checkpoint).name}\n")
         else:
-            print(f"\nTraining {fold_str} from scratch...")
+            print(f"Starting training...\n")
     else:
-        print(f"\nTraining {fold_str} from scratch (resume disabled)...")
+        print(f"Starting training...\n")
 
     trainer.train(resume_from_checkpoint=resume_checkpoint)
 
@@ -844,16 +852,13 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
     }
 
     print(f"\n{'=' * 70}")
-    print(f"{fold_str} complete - best {metric}: {result['best_metric']:.4f}")
+    status = f"Early stopped at epoch {early_stopped:.1f}" if early_stopped else f"Completed {result['epochs_completed']:.1f} epochs"
+    print(f"✓ {fold_str} | {metric}={result['best_metric']:.4f} | {status}")
     if result["best_eval_cer"] is not None:
-        print(f"  best eval_cer: {result['best_eval_cer']:.4f}")
-    if early_stopped:
-        print(f"  ⏱️  Early stopped at epoch {early_stopped:.1f} (saved {train_cfg['epochs'] - early_stopped:.1f} epochs)")
-    else:
-        print(f"  ✓ Completed all {result['epochs_completed']:.1f} epochs")
+        print(f"  eval_cer={result['best_eval_cer']:.4f}")
     if result["mask_failures"]:
-        print(f"  WARNING: {result['mask_failures']} samples failed label masking")
-    print(f"  saved -> {best_dir}")
+        print(f"  ⚠️  {result['mask_failures']} samples failed label masking")
+    print(f"  Saved: {best_dir}")
     print(f"{'=' * 70}\n")
 
     # Explicit teardown. Sequential folds otherwise fragment VRAM and OOM
@@ -911,9 +916,9 @@ def train(cfg: dict):
     image_dir = REPO_ROOT / data_cfg["image_dir"]
     base_output_dir = REPO_ROOT / train_cfg["output_dir"]
 
-    print(f"Loading {train_csv}")
     df = pd.read_csv(train_csv)
-    print(f"  {len(df)} rows, {df['Target'].isna().sum()} NaN targets")
+    nan_count = df['Target'].isna().sum()
+    print(f"Loaded {len(df)} samples from {train_csv.name}" + (f" ({nan_count} NaN targets)" if nan_count > 0 else ""))
 
     k_folds = data_cfg.get("k_folds", 1)
     n_folds = k_folds if k_folds > 1 else None
@@ -926,28 +931,22 @@ def train(cfg: dict):
         ))
 
     if len(results) > 1:
-        print(f"\n{'=' * 70}\nK-FOLD RESULTS\n{'=' * 70}")
+        print(f"\n{'=' * 70}")
+        print(f"K-FOLD SUMMARY ({n_folds} folds)")
+        print(f"{'=' * 70}")
         for r in results:
-            line = f"  Fold {r['fold']}/{n_folds}: eval_loss={r['best_eval_loss']:.4f}"
-            if r["best_eval_cer"] is not None:
-                line += f"  eval_cer={r['best_eval_cer']:.4f}"
-            if r.get("early_stopped"):
-                line += f"  [early stop @ {r['stopped_epoch']:.1f}]"
-            print(line)
+            stop_tag = f" [stopped @ {r['stopped_epoch']:.1f}]" if r.get("early_stopped") else ""
+            cer_str = f" | cer={r['best_eval_cer']:.4f}" if r["best_eval_cer"] is not None else ""
+            print(f"  Fold {r['fold']}: loss={r['best_eval_loss']:.4f}{cer_str}{stop_tag}")
 
         losses = [r["best_eval_loss"] for r in results]
-        print(f"\n  eval_loss  {np.mean(losses):.4f} +/- {np.std(losses):.4f}")
-
         cers = [r["best_eval_cer"] for r in results if r["best_eval_cer"] is not None]
-        if cers:
-            print(f"  eval_cer   {np.mean(cers):.4f} +/- {np.std(cers):.4f}")
 
-        # Early stopping summary
-        n_early_stopped = sum(1 for r in results if r.get("early_stopped"))
-        if n_early_stopped > 0:
-            avg_epochs = np.mean([r["epochs_completed"] for r in results])
-            print(f"\n  Early stopping: {n_early_stopped}/{len(results)} folds stopped early")
-            print(f"  Avg epochs completed: {avg_epochs:.1f}/{train_cfg['epochs']}")
+        print(f"\nAverage: loss={np.mean(losses):.4f}±{np.std(losses):.4f}", end="")
+        if cers:
+            print(f" | cer={np.mean(cers):.4f}±{np.std(cers):.4f}")
+        else:
+            print()
 
         print(f"{'=' * 70}\n")
 

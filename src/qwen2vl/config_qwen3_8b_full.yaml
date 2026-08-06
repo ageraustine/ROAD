@@ -1,0 +1,89 @@
+# Qwen3-VL-8B Full Dataset Training (No K-Fold)
+# Train on 90% of data (~3,688 samples) vs K-fold's 80% (~3,278 samples)
+
+model:
+  name: "Qwen/Qwen3-VL-8B-Instruct"
+  use_flash_attention: true
+  use_quantization: false
+  torch_dtype: "bfloat16"
+
+data:
+  train_csv: "dataset/Train.csv"
+  test_csv: "dataset/Test.csv"
+  image_dir: "dataset/images"
+
+  # NO K-FOLD - use simple train/val split
+  k_folds: 1  # Disables K-fold
+  val_split: 0.1  # 90% train (3,688), 10% val (410)
+  seed: 42
+
+training:
+  output_dir: "outputs/qwen3-8b-full"
+
+  batch_size: 2
+  eval_batch_size: 2
+  gradient_accumulation_steps: 8  # effective batch = 16
+
+  # With 12.5% more data per epoch, model learns faster
+  # Start conservative (3 epochs) - early stopping will catch if too many
+  epochs: 3
+  learning_rate: 0.00002
+  warmup_ratio: 0.1
+  lr_scheduler: "cosine"
+
+  # STRONGER regularization (more data = can regularize more)
+  weight_decay: 0.1  # increased from 0.05
+  max_grad_norm: 1.0
+  gradient_checkpointing: true
+
+  # LoRA config - same as before
+  lora_r: 64
+  lora_alpha: 128
+  lora_dropout: 0.15  # increased from 0.1 to reduce hallucination
+  lora_target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+  lora_modules_to_save:
+    - "merger"  # Train vision projector
+
+  max_pixels: 2016000
+
+  eval_steps: 100
+  save_steps: 100
+  save_total_limit: 3
+
+  # Compute CER for monitoring
+  compute_cer: true
+  metric_for_best_model: "eval_cer"
+
+  num_workers: 8
+  resume_from_checkpoint: true
+
+  # Early stopping
+  early_stopping:
+    enabled: true
+    metric: "eval_loss"
+    patience: 3
+    min_delta: 0.0001
+
+augmentation:
+  enabled: true
+  p_blur: 0.0
+  p_noise: 0.0
+  p_brightness: 0.3
+  p_contrast: 0.3
+  p_rotate: 0.1
+  max_rotation: 1
+
+inference:
+  checkpoint: "outputs/qwen3-8b-full/best"
+  output_csv: "submission_full.csv"
+  max_new_tokens: 150  # reduced from 256 to prevent hallucination
+  num_beams: 5
+  batch_size: 8
