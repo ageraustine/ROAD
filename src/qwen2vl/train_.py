@@ -14,8 +14,10 @@ Refactor notes (vs. original):
 
 import gc
 import os
+import math
 import json
 import random
+import inspect
 import argparse
 import logging
 from pathlib import Path
@@ -43,6 +45,12 @@ try:
 except ImportError:
     GROUP_KFOLD_AVAILABLE = False
 
+import transformers
+
+# v5 dropped a pile of TrainingArguments fields (warmup_ratio, overwrite_output_dir,
+# evaluation_strategy, per_gpu_*) and renamed from_pretrained's torch_dtype -> dtype.
+TF_MAJOR = int(transformers.__version__.split(".")[0])
+
 
 # ─────────────────────────────────────────────────────────────
 # CONSTANTS
@@ -57,6 +65,50 @@ OCR_PROMPT = (
 )
 
 ASSISTANT_HEADER = "<|im_start|>assistant\n"
+
+
+# ─────────────────────────────────────────────────────────────
+# VERSION COMPATIBILITY
+# ─────────────────────────────────────────────────────────────
+
+def compute_schedule(n_samples: int, batch_size: int, grad_accum: int,
+                     epochs: int, warmup_ratio: float):
+    """
+    Optimizer-step counts, used to express warmup as an integer.
+
+    The original script used floor division on the sample count, which
+    under-counts whenever the last batch is partial. The Trainer itself uses
+    ceil at both levels, so this matches what actually runs and the cosine
+    schedule lands on the true final step.
+    """
+    steps_per_epoch = math.ceil(math.ceil(n_samples / batch_size) / grad_accum)
+    total_steps = steps_per_epoch * epochs
+    warmup_steps = max(1, int(total_steps * warmup_ratio))
+    return steps_per_epoch, total_steps, warmup_steps
+
+
+def supported_kwargs(cls, kwargs: dict) -> dict:
+    """
+    Drop kwargs the installed version's __init__ doesn't accept, and say which.
+
+    Avoids whack-a-mole across transformers v4/v5, where fields get removed
+    one at a time and each one costs a full crash to discover.
+    """
+    try:
+        sig = inspect.signature(cls.__init__)
+    except (TypeError, ValueError):
+        return kwargs
+
+    params = sig.parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs  # accepts **kwargs, nothing to filter
+
+    valid = set(params)
+    dropped = sorted(k for k in kwargs if k not in valid)
+    if dropped:
+        print(f"  [compat] {cls.__name__} on transformers {transformers.__version__} "
+              f"does not accept: {', '.join(dropped)} - dropped")
+    return {k: v for k, v in kwargs.items() if k in valid}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -448,8 +500,10 @@ def setup_model(cfg: dict):
         "trust_remote_code": True,
     }
 
-    # Qwen3-VL's from_pretrained uses `dtype`; older ones use `torch_dtype`.
-    if family == "qwen3":
+    # v5 renamed from_pretrained's torch_dtype -> dtype for every model. On v4
+    # only Qwen3-VL takes `dtype`. Passing the wrong one is silently ignored
+    # (it lands in **kwargs) and you get fp32 weights and an OOM.
+    if TF_MAJOR >= 5 or family == "qwen3":
         model_kwargs["dtype"] = dtype
     else:
         model_kwargs["torch_dtype"] = dtype
@@ -548,14 +602,27 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
     eval_bs = train_cfg.get("eval_batch_size", train_cfg["batch_size"])
     metric = train_cfg.get("metric_for_best_model", "eval_loss")
 
-    args = TrainingArguments(
+    # Express warmup as an explicit integer step count. transformers v5 removed
+    # warmup_ratio; its warmup_steps accepts a float there but not on v4, so an
+    # int is the only form that works on both. (The original script did this too.)
+    steps_per_epoch, total_steps, warmup_steps = compute_schedule(
+        n_samples=len(train_dataset),
+        batch_size=train_cfg["batch_size"],
+        grad_accum=train_cfg["gradient_accumulation_steps"],
+        epochs=train_cfg["epochs"],
+        warmup_ratio=train_cfg.get("warmup_ratio", 0.1),
+    )
+    print(f"  schedule: {steps_per_epoch} steps/epoch, {total_steps} total, "
+          f"{warmup_steps} warmup ({train_cfg.get('warmup_ratio', 0.1):.0%})")
+
+    ta_kwargs = dict(
         output_dir=str(fold_output_dir),
         per_device_train_batch_size=train_cfg["batch_size"],
         per_device_eval_batch_size=eval_bs,
         gradient_accumulation_steps=train_cfg["gradient_accumulation_steps"],
         num_train_epochs=train_cfg["epochs"],
         learning_rate=train_cfg["learning_rate"],
-        warmup_ratio=train_cfg.get("warmup_ratio", 0.1),
+        warmup_steps=warmup_steps,
         lr_scheduler_type=train_cfg["lr_scheduler"],
         weight_decay=train_cfg["weight_decay"],
         max_grad_norm=train_cfg["max_grad_norm"],
@@ -578,6 +645,7 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
         data_seed=data_cfg.get("seed", 42),
         disable_tqdm=is_kfold,
     )
+    args = TrainingArguments(**supported_kwargs(TrainingArguments, ta_kwargs))
 
     callbacks = []
     if train_cfg.get("compute_cer", True):
