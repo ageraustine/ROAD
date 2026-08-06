@@ -38,7 +38,7 @@ training:
 
   # Schedule - optimal for 4K dataset
   epochs: 3  # sweet spot for dataset size
-  learning_rate: 2e-5  # standard for Qwen2-VL
+  learning_rate: 0.00002  # 2e-5, standard for Qwen2-VL
   warmup_ratio: 0.1  # 10% warmup
   lr_scheduler: "cosine"
   weight_decay: 0.05  # stronger regularization to prevent overfitting

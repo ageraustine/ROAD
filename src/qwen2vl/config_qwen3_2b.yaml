@@ -38,7 +38,7 @@ training:
 
   # Schedule - Conservative to prevent overfitting
   epochs: 4  # reduced from 7 - prevent overfitting on 4K samples
-  learning_rate: 2e-5  # reduced from 3e-5 - more stable training
+  learning_rate: 0.00002  # 2e-5, reduced from 3e-5 - more stable training
   warmup_ratio: 0.1  # reduced from 0.15 - standard warmup
   lr_scheduler: "cosine"
   weight_decay: 0.05  # increased from 0.01 - stronger regularization
