@@ -292,12 +292,18 @@ def predict_batch(
 # INFERENCE
 # ─────────────────────────────────────────────────────────────
 
-def ensemble_predictions(predictions: list) -> str:
+def ensemble_predictions(predictions: list, strategy: str = "char_voting") -> str:
     """
-    Ensemble multiple predictions using character-level voting.
+    Ensemble multiple predictions using various strategies.
 
     Args:
         predictions: List of prediction strings from different models
+        strategy: Ensemble strategy - one of:
+            - "char_voting": Character-level majority voting (default, may degrade quality)
+            - "majority": Pick most common full prediction
+            - "longest": Pick longest prediction
+            - "shortest": Pick shortest prediction
+            - "first": Use first fold only (no ensemble)
 
     Returns:
         Ensembled prediction string
@@ -305,23 +311,41 @@ def ensemble_predictions(predictions: list) -> str:
     if len(predictions) == 1:
         return predictions[0]
 
-    # Pad all predictions to same length
-    max_len = max(len(p) for p in predictions)
-    padded = [p + ' ' * (max_len - len(p)) for p in predictions]
+    if strategy == "char_voting":
+        # Character-level voting (original method)
+        max_len = max(len(p) for p in predictions)
+        padded = [p + ' ' * (max_len - len(p)) for p in predictions]
 
-    # Vote for each character position
-    result = []
-    for i in range(max_len):
-        chars = [p[i] for p in padded]
-        # Most common character wins (majority vote)
-        most_common = Counter(chars).most_common(1)[0][0]
-        result.append(most_common)
+        result = []
+        for i in range(max_len):
+            chars = [p[i] for p in padded]
+            most_common = Counter(chars).most_common(1)[0][0]
+            result.append(most_common)
 
-    # Join and strip trailing spaces
-    return ''.join(result).rstrip()
+        return ''.join(result).rstrip()
+
+    elif strategy == "majority":
+        # Pick most common full prediction
+        counter = Counter(predictions)
+        return counter.most_common(1)[0][0]
+
+    elif strategy == "longest":
+        # Pick longest prediction
+        return max(predictions, key=len)
+
+    elif strategy == "shortest":
+        # Pick shortest prediction
+        return min(predictions, key=len)
+
+    elif strategy == "first":
+        # Use first fold only
+        return predictions[0]
+
+    else:
+        raise ValueError(f"Unknown ensemble strategy: {strategy}")
 
 
-def run_kfold_inference(cfg: dict, clear_cache: bool = False):
+def run_kfold_inference(cfg: dict, clear_cache: bool = False, ensemble_strategy: str = "char_voting"):
     """
     Run K-Fold ensemble inference on test set with batching and resumability.
 
@@ -331,6 +355,7 @@ def run_kfold_inference(cfg: dict, clear_cache: bool = False):
     Args:
         cfg: Configuration dictionary
         clear_cache: If True, delete cached predictions and re-run all folds
+        ensemble_strategy: Strategy for combining fold predictions (char_voting, majority, longest, shortest, first)
     """
 
     model_cfg = cfg["model"]
@@ -372,7 +397,8 @@ def run_kfold_inference(cfg: dict, clear_cache: bool = False):
         return None
 
     print(f"\n{'='*70}")
-    print(f"K-FOLD ENSEMBLE: {len(fold_checkpoints)} folds | {len(pd.read_csv(test_csv))} test samples")
+    print(f"K-FOLD ENSEMBLE: {len(fold_checkpoints)} folds | Strategy: {ensemble_strategy}")
+    print(f"Test samples: {len(pd.read_csv(test_csv))}")
     print(f"{'='*70}\n")
 
     # Load test data
@@ -481,7 +507,7 @@ def run_kfold_inference(cfg: dict, clear_cache: bool = False):
         torch.cuda.empty_cache()
 
     # Ensemble predictions
-    print(f"\nEnsembling {len(df)} predictions...", end=" ", flush=True)
+    print(f"\nEnsembling {len(df)} predictions (strategy={ensemble_strategy})...", end=" ", flush=True)
     results = []
 
     for _, row in df.iterrows():
@@ -491,7 +517,7 @@ def run_kfold_inference(cfg: dict, clear_cache: bool = False):
         img_predictions = [fold_preds.get(img_id, "") for fold_preds in all_fold_predictions]
 
         # Ensemble
-        ensembled = ensemble_predictions(img_predictions)
+        ensembled = ensemble_predictions(img_predictions, strategy=ensemble_strategy)
         results.append({"ID": img_id, "Target": ensembled})
 
     # Save submission
@@ -609,6 +635,12 @@ def main():
         action="store_true",
         help="Clear cached fold predictions and re-run all inference (K-Fold only)",
     )
+    parser.add_argument(
+        "--ensemble-strategy",
+        default="char_voting",
+        choices=["char_voting", "majority", "longest", "shortest", "first"],
+        help="Ensemble strategy (K-Fold only): char_voting (default), majority (most common full prediction), longest, shortest, first (fold 1 only)",
+    )
     args = parser.parse_args()
 
     config_path = SCRIPT_DIR / args.config
@@ -622,7 +654,7 @@ def main():
     if args.kfold:
         # K-Fold ensemble inference
         print("Running K-Fold ensemble inference...")
-        run_kfold_inference(cfg, clear_cache=args.clear_cache)
+        run_kfold_inference(cfg, clear_cache=args.clear_cache, ensemble_strategy=args.ensemble_strategy)
     else:
         # Single model inference
         if args.checkpoint:
