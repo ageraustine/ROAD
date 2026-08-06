@@ -7,6 +7,7 @@ import os
 import json
 import shutil
 import argparse
+import warnings
 from pathlib import Path
 from collections import Counter
 
@@ -18,6 +19,14 @@ from tqdm import tqdm
 
 from transformers import AutoProcessor
 from peft import PeftModel
+
+# Suppress repetitive padding side warnings during batched inference
+warnings.filterwarnings(
+    "ignore",
+    message=".*padding_side.*",
+    category=UserWarning,
+    module="transformers"
+)
 
 # Support both Qwen2-VL and Qwen3-VL
 try:
@@ -84,7 +93,7 @@ def clean_output(text: str) -> str:
 # MODEL LOADING
 # ─────────────────────────────────────────────────────────────
 
-def load_model(checkpoint_path: str, model_name: str, use_flash: bool = True):
+def load_model(checkpoint_path: str, model_name: str, use_flash: bool = True, verbose: bool = False):
     """Load fine-tuned model with LoRA weights."""
 
     # Detect model type
@@ -103,18 +112,13 @@ def load_model(checkpoint_path: str, model_name: str, use_flash: bool = True):
     else:
         model_kwargs["torch_dtype"] = torch.bfloat16
 
-    print(f"Loading base model: {model_name}")
-
     # Select appropriate model class
     if is_qwen3 and QWEN3_AVAILABLE:
         model_class = Qwen3VLForConditionalGeneration
-        print("Using Qwen3VLForConditionalGeneration")
     elif is_qwen2 and QWEN2_AVAILABLE:
         model_class = Qwen2VLForConditionalGeneration
-        print("Using Qwen2VLForConditionalGeneration")
     else:
         model_class = AutoModelForVision2Seq
-        print("Using AutoModelForVision2Seq")
 
     if use_flash:
         try:
@@ -124,30 +128,26 @@ def load_model(checkpoint_path: str, model_name: str, use_flash: bool = True):
                 model_name,
                 **model_kwargs,
             )
-            print("✓ Using Flash Attention 2")
-        except Exception as e:
-            print(f"⚠️  Flash Attention 2 not available: {e}")
-            print("  Falling back to standard attention...")
+        except Exception:
             # Fallback to standard attention
             model_kwargs.pop("attn_implementation", None)
             base_model = model_class.from_pretrained(
                 model_name,
                 **model_kwargs,
             )
-            print("✓ Using standard attention")
     else:
-        print("Flash Attention 2 disabled")
         base_model = model_class.from_pretrained(
             model_name,
             **model_kwargs,
         )
-        print("✓ Using standard attention")
 
-    print(f"Loading LoRA weights from: {checkpoint_path}")
     model = PeftModel.from_pretrained(base_model, checkpoint_path)
     model.eval()
 
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+
+    # Set left padding for decoder-only model (required for correct batched generation)
+    processor.tokenizer.padding_side = 'left'
 
     return model, processor
 
@@ -350,11 +350,10 @@ def run_kfold_inference(cfg: dict, clear_cache: bool = False):
 
     # Clear cache if requested
     if clear_cache:
-        print("🗑️  Clearing inference cache...")
         if inference_cache_dir.exists():
             shutil.rmtree(inference_cache_dir)
             inference_cache_dir.mkdir(parents=True, exist_ok=True)
-        print("   Cache cleared.\n")
+        print("🗑️  Cache cleared\n")
 
     # Find all fold checkpoints
     k_folds = data_cfg.get("k_folds", 5)
@@ -373,14 +372,11 @@ def run_kfold_inference(cfg: dict, clear_cache: bool = False):
         return None
 
     print(f"\n{'='*70}")
-    print(f"K-FOLD ENSEMBLE INFERENCE: {len(fold_checkpoints)} folds")
-    print(f"Inference cache: {inference_cache_dir}")
+    print(f"K-FOLD ENSEMBLE: {len(fold_checkpoints)} folds | {len(pd.read_csv(test_csv))} test samples")
     print(f"{'='*70}\n")
 
     # Load test data
-    print(f"Loading test data from {test_csv}")
     df = pd.read_csv(test_csv)
-    print(f"Test samples: {len(df)}\n")
 
     # Get batch size from config
     batch_size = inf_cfg.get("batch_size", 2)
@@ -389,33 +385,52 @@ def run_kfold_inference(cfg: dict, clear_cache: bool = False):
     all_fold_predictions = []
 
     for fold_num, checkpoint in fold_checkpoints:
-        # Check for cached predictions
-        cache_file = inference_cache_dir / f"fold_{fold_num}_predictions.json"
+        # Check for cached predictions (JSON first, then CSV)
+        json_cache_file = inference_cache_dir / f"fold_{fold_num}_predictions.json"
+        csv_cache_file = inference_cache_dir / f"fold_{fold_num}_predictions.csv"
 
-        if cache_file.exists():
-            print(f"⏩ Fold {fold_num}: Loading cached predictions from {cache_file.name}")
-            with open(cache_file, 'r') as f:
+        # Priority 1: JSON cache (fastest)
+        if json_cache_file.exists():
+            print(f"⏩ Fold {fold_num}: Cached ({len(json.load(open(json_cache_file)))} predictions)")
+            with open(json_cache_file, 'r') as f:
                 fold_predictions = json.load(f)
             all_fold_predictions.append(fold_predictions)
-            print(f"   Loaded {len(fold_predictions)} predictions\n")
+            continue
+
+        # Priority 2: CSV cache (if JSON doesn't exist)
+        if csv_cache_file.exists():
+            print(f"⏩ Fold {fold_num}: Cached CSV → converting to JSON...")
+            cache_df = pd.read_csv(csv_cache_file)
+
+            # Convert CSV to dict format
+            fold_predictions = dict(zip(
+                cache_df['ID'].astype(str).str.strip(),
+                cache_df['Target'].astype(str)
+            ))
+
+            all_fold_predictions.append(fold_predictions)
+
+            # Convert CSV to JSON for faster future loads
+            with open(json_cache_file, 'w') as f:
+                json.dump(fold_predictions, f, indent=2)
             continue
 
         # Run inference for this fold
-        print(f"🔄 Fold {fold_num}: Loading model from {checkpoint}")
+        print(f"🔄 Fold {fold_num}: Running inference (batch_size={batch_size})...", flush=True)
         model, processor = load_model(
             str(checkpoint),
             model_cfg["name"],
             use_flash=model_cfg.get("use_flash_attention", True),
         )
 
-        print(f"   Running predictions (batch_size={batch_size})...")
         fold_predictions = {}
 
         # Process in batches
         batch_ids = []
         batch_images = []
 
-        for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Fold {fold_num}"):
+        for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Fold {fold_num}",
+                          mininterval=2.0, ncols=80):
             img_id = str(row["ID"]).strip()
             img_path = image_dir / f"{img_id}.jpg"
 
@@ -455,19 +470,18 @@ def run_kfold_inference(cfg: dict, clear_cache: bool = False):
                 fold_predictions[bid] = pred
 
         # Save predictions to cache (for resumability)
-        print(f"   Saving predictions to cache: {cache_file.name}")
-        with open(cache_file, 'w') as f:
+        with open(json_cache_file, 'w') as f:
             json.dump(fold_predictions, f, indent=2)
+        print(f"   ✓ Cached to {json_cache_file.name}\n")
 
         all_fold_predictions.append(fold_predictions)
 
         # Free memory
         del model
         torch.cuda.empty_cache()
-        print()
 
     # Ensemble predictions
-    print("Ensembling predictions across folds...")
+    print(f"\nEnsembling {len(df)} predictions...", end=" ", flush=True)
     results = []
 
     for _, row in df.iterrows():
@@ -483,9 +497,7 @@ def run_kfold_inference(cfg: dict, clear_cache: bool = False):
     # Save submission
     out_df = pd.DataFrame(results)
     out_df.to_csv(output_csv, index=False)
-    print(f"\n{'='*70}")
-    print(f"Saved ensemble submission to {output_csv}")
-    print(f"{'='*70}\n")
+    print(f"✓\n✅ Saved: {output_csv}\n")
 
     return out_df
 
@@ -509,27 +521,26 @@ def run_inference(cfg: dict, checkpoint_override: str = None):
     output_csv = REPO_ROOT / inf_cfg["output_csv"]
 
     # Load model
+    print(f"Loading model...", end=" ", flush=True)
     model, processor = load_model(
         str(checkpoint),
         model_cfg["name"],
         use_flash=model_cfg.get("use_flash_attention", True),
     )
+    print("✓")
 
     # Load test data
-    print(f"Loading test data from {test_csv}")
     df = pd.read_csv(test_csv)
-    print(f"Test samples: {len(df)}")
-
-    # Get batch size from config
     batch_size = inf_cfg.get("batch_size", 2)
-    print(f"Batch size: {batch_size}")
+    print(f"Running inference: {len(df)} samples (batch_size={batch_size})")
 
     # Run predictions in batches
     results = []
     batch_ids = []
     batch_images = []
 
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="Predicting"):
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Predicting",
+                      mininterval=2.0, ncols=80):
         img_id = str(row["ID"]).strip()
         img_path = image_dir / f"{img_id}.jpg"
 
@@ -572,7 +583,7 @@ def run_inference(cfg: dict, checkpoint_override: str = None):
     # Save submission
     out_df = pd.DataFrame(results)
     out_df.to_csv(output_csv, index=False)
-    print(f"Saved submission to {output_csv}")
+    print(f"✅ Saved: {output_csv}")
 
     return out_df
 

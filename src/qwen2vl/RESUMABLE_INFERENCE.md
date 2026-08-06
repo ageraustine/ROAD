@@ -39,17 +39,62 @@ outputs/qwen3-8b-v1/
 
 ```python
 for fold_num in [1, 2, 3, 4, 5]:
-    cache_file = f"inference_cache/fold_{fold_num}_predictions.json"
+    json_cache = f"inference_cache/fold_{fold_num}_predictions.json"
+    csv_cache = f"inference_cache/fold_{fold_num}_predictions.csv"
 
-    if cache_file exists:
-        # Load cached predictions (instant)
-        predictions = load_json(cache_file)
+    if json_cache exists:
+        # Load JSON cache (instant, preferred format)
+        predictions = load_json(json_cache)
+    elif csv_cache exists:
+        # Load CSV cache and convert to JSON
+        predictions = load_csv(csv_cache)
+        save_json(json_cache, predictions)  # Convert for future speed
     else:
         # Run inference (~20 minutes)
         model = load_model(fold_checkpoint)
         predictions = run_inference(model, test_images)
         # Save to cache
-        save_json(cache_file, predictions)
+        save_json(json_cache, predictions)
+```
+
+### CSV Import Support
+
+**NEW**: You can now import existing predictions from CSV files!
+
+If you already have predictions for some folds (e.g., from a previous run or different script), place them in the inference cache directory as CSV:
+
+```
+outputs/qwen3-8b-v1/inference_cache/
+└── fold_1_predictions.csv  # Your existing results
+```
+
+**CSV Format** (same as submission.csv):
+```csv
+ID,Target
+ABC123,Signed Sealed and delivered
+XYZ789,This done and protested the day
+```
+
+**Behavior**:
+1. Script detects CSV file
+2. Loads predictions from CSV
+3. Automatically converts to JSON for faster future loads
+4. Continues with remaining folds
+
+**Example**:
+```bash
+# You have fold 1 results from another source
+cp my_fold1_results.csv outputs/qwen3-8b-v1/inference_cache/fold_1_predictions.csv
+
+# Run K-fold inference
+python inference.py --config config_qwen3_8b.yaml --kfold
+
+# Output:
+# ⏩ Fold 1: Loading cached predictions from fold_1_predictions.csv (CSV)
+#    Loaded 1373 predictions
+#    Converting to JSON format for future speed...
+#    Saved as fold_1_predictions.json
+# 🔄 Fold 2: Running predictions...
 ```
 
 ---
@@ -391,6 +436,31 @@ watch -n 5 'ls -lh outputs/qwen3-8b-v1/inference_cache/'
 
 # See which folds completed
 ```
+
+### 5. Import Existing Predictions (CSV)
+
+**Use case**: You already have predictions from some folds (e.g., different experiment, previous run)
+
+```bash
+# Copy your existing CSV results to cache directory
+cp fold_1_results.csv outputs/qwen3-8b-v1/inference_cache/fold_1_predictions.csv
+cp fold_2_results.csv outputs/qwen3-8b-v1/inference_cache/fold_2_predictions.csv
+
+# Run ensemble - will use CSV cache for folds 1-2, run inference for 3-5
+python inference.py --config config_qwen3_8b.yaml --kfold
+```
+
+**CSV format requirements**:
+```csv
+ID,Target
+img_id_1,transcription text 1
+img_id_2,transcription text 2
+```
+
+**Important**:
+- CSV must have exactly 1373 rows (test set size)
+- All IDs must match Test.csv
+- Script will auto-convert CSV → JSON for future speed
 
 ---
 
