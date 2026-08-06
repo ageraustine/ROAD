@@ -102,4 +102,4 @@ inference:
   output_csv: "submission.csv"
   max_new_tokens: 256
   num_beams: 5
-  batch_size: 1
+  batch_size: 2  # Batched inference for 2x speedup

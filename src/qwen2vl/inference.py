@@ -4,6 +4,8 @@ Generates submission.csv for competition
 """
 
 import os
+import json
+import shutil
 import argparse
 from pathlib import Path
 from collections import Counter
@@ -206,6 +208,86 @@ def predict_single(
     return clean_output(output_text[0] if output_text else "")
 
 
+def predict_batch(
+    model,
+    processor,
+    images: list[Image.Image],
+    max_new_tokens: int = 256,
+    num_beams: int = 5,
+) -> list[str]:
+    """
+    Generate transcriptions for a batch of images.
+
+    Args:
+        model: The model to use for generation
+        processor: The processor for tokenization
+        images: List of PIL images to process
+        max_new_tokens: Maximum tokens to generate
+        num_beams: Number of beams for beam search
+
+    Returns:
+        List of transcription strings (same order as input images)
+    """
+    if not images:
+        return []
+
+    # Build messages for each image
+    messages_batch = [
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": img},
+                    {"type": "text", "text": OCR_PROMPT},
+                ],
+            }
+        ]
+        for img in images
+    ]
+
+    # Apply chat template to each conversation
+    text_inputs = [
+        processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        for messages in messages_batch
+    ]
+
+    # Process batch (processor handles padding automatically)
+    inputs = processor(
+        text=text_inputs,
+        images=images,
+        padding=True,
+        return_tensors="pt"
+    )
+    inputs = inputs.to(model.device)
+
+    with torch.inference_mode():
+        generated_ids = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            num_beams=num_beams,
+            do_sample=False,
+        )
+
+    # Trim input prompt from generated output
+    generated_ids_trimmed = [
+        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+    ]
+
+    # Decode all outputs
+    output_texts = processor.batch_decode(
+        generated_ids_trimmed,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False
+    )
+
+    # Clean each output
+    return [clean_output(text) for text in output_texts]
+
+
 # ─────────────────────────────────────────────────────────────
 # INFERENCE
 # ─────────────────────────────────────────────────────────────
@@ -239,8 +321,17 @@ def ensemble_predictions(predictions: list) -> str:
     return ''.join(result).rstrip()
 
 
-def run_kfold_inference(cfg: dict):
-    """Run K-Fold ensemble inference on test set."""
+def run_kfold_inference(cfg: dict, clear_cache: bool = False):
+    """
+    Run K-Fold ensemble inference on test set with batching and resumability.
+
+    Saves predictions for each fold to disk. If interrupted, can resume from
+    last completed fold without re-running inference.
+
+    Args:
+        cfg: Configuration dictionary
+        clear_cache: If True, delete cached predictions and re-run all folds
+    """
 
     model_cfg = cfg["model"]
     data_cfg = cfg["data"]
@@ -253,6 +344,18 @@ def run_kfold_inference(cfg: dict):
     base_output_dir = REPO_ROOT / train_cfg["output_dir"]
     output_csv = REPO_ROOT / inf_cfg["output_csv"]
 
+    # Inference cache directory for resumability
+    inference_cache_dir = base_output_dir / "inference_cache"
+    inference_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clear cache if requested
+    if clear_cache:
+        print("🗑️  Clearing inference cache...")
+        if inference_cache_dir.exists():
+            shutil.rmtree(inference_cache_dir)
+            inference_cache_dir.mkdir(parents=True, exist_ok=True)
+        print("   Cache cleared.\n")
+
     # Find all fold checkpoints
     k_folds = data_cfg.get("k_folds", 5)
     fold_checkpoints = []
@@ -260,7 +363,7 @@ def run_kfold_inference(cfg: dict):
     for fold_num in range(1, k_folds + 1):
         fold_checkpoint = base_output_dir / f"fold_{fold_num}" / "best"
         if fold_checkpoint.exists():
-            fold_checkpoints.append(fold_checkpoint)
+            fold_checkpoints.append((fold_num, fold_checkpoint))
         else:
             print(f"Warning: Fold {fold_num} checkpoint not found: {fold_checkpoint}")
 
@@ -271,6 +374,7 @@ def run_kfold_inference(cfg: dict):
 
     print(f"\n{'='*70}")
     print(f"K-FOLD ENSEMBLE INFERENCE: {len(fold_checkpoints)} folds")
+    print(f"Inference cache: {inference_cache_dir}")
     print(f"{'='*70}\n")
 
     # Load test data
@@ -278,21 +382,40 @@ def run_kfold_inference(cfg: dict):
     df = pd.read_csv(test_csv)
     print(f"Test samples: {len(df)}\n")
 
-    # Collect predictions from all folds
+    # Get batch size from config
+    batch_size = inf_cfg.get("batch_size", 2)
+
+    # Collect predictions from all folds (with caching)
     all_fold_predictions = []
 
-    for fold_idx, checkpoint in enumerate(fold_checkpoints, 1):
-        print(f"Loading Fold {fold_idx} model from {checkpoint}")
+    for fold_num, checkpoint in fold_checkpoints:
+        # Check for cached predictions
+        cache_file = inference_cache_dir / f"fold_{fold_num}_predictions.json"
+
+        if cache_file.exists():
+            print(f"⏩ Fold {fold_num}: Loading cached predictions from {cache_file.name}")
+            with open(cache_file, 'r') as f:
+                fold_predictions = json.load(f)
+            all_fold_predictions.append(fold_predictions)
+            print(f"   Loaded {len(fold_predictions)} predictions\n")
+            continue
+
+        # Run inference for this fold
+        print(f"🔄 Fold {fold_num}: Loading model from {checkpoint}")
         model, processor = load_model(
             str(checkpoint),
             model_cfg["name"],
             use_flash=model_cfg.get("use_flash_attention", True),
         )
 
-        print(f"Running predictions for Fold {fold_idx}...")
+        print(f"   Running predictions (batch_size={batch_size})...")
         fold_predictions = {}
 
-        for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Fold {fold_idx}"):
+        # Process in batches
+        batch_ids = []
+        batch_images = []
+
+        for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Fold {fold_num}"):
             img_id = str(row["ID"]).strip()
             img_path = image_dir / f"{img_id}.jpg"
 
@@ -301,14 +424,40 @@ def run_kfold_inference(cfg: dict):
                 continue
 
             image = load_image(str(img_path))
-            pred = predict_single(
+            batch_ids.append(img_id)
+            batch_images.append(image)
+
+            # Process batch when full
+            if len(batch_images) >= batch_size:
+                preds = predict_batch(
+                    model,
+                    processor,
+                    batch_images,
+                    max_new_tokens=inf_cfg["max_new_tokens"],
+                    num_beams=inf_cfg["num_beams"],
+                )
+                for bid, pred in zip(batch_ids, preds):
+                    fold_predictions[bid] = pred
+
+                batch_ids = []
+                batch_images = []
+
+        # Process remaining images
+        if batch_images:
+            preds = predict_batch(
                 model,
                 processor,
-                image,
+                batch_images,
                 max_new_tokens=inf_cfg["max_new_tokens"],
                 num_beams=inf_cfg["num_beams"],
             )
-            fold_predictions[img_id] = pred
+            for bid, pred in zip(batch_ids, preds):
+                fold_predictions[bid] = pred
+
+        # Save predictions to cache (for resumability)
+        print(f"   Saving predictions to cache: {cache_file.name}")
+        with open(cache_file, 'w') as f:
+            json.dump(fold_predictions, f, indent=2)
 
         all_fold_predictions.append(fold_predictions)
 
@@ -342,7 +491,7 @@ def run_kfold_inference(cfg: dict):
 
 
 def run_inference(cfg: dict, checkpoint_override: str = None):
-    """Run single-model inference on test set and generate submission."""
+    """Run single-model inference on test set and generate submission with batching."""
 
     model_cfg = cfg["model"]
     data_cfg = cfg["data"]
@@ -371,8 +520,14 @@ def run_inference(cfg: dict, checkpoint_override: str = None):
     df = pd.read_csv(test_csv)
     print(f"Test samples: {len(df)}")
 
-    # Run predictions
+    # Get batch size from config
+    batch_size = inf_cfg.get("batch_size", 2)
+    print(f"Batch size: {batch_size}")
+
+    # Run predictions in batches
     results = []
+    batch_ids = []
+    batch_images = []
 
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Predicting"):
         img_id = str(row["ID"]).strip()
@@ -384,16 +539,35 @@ def run_inference(cfg: dict, checkpoint_override: str = None):
             continue
 
         image = load_image(str(img_path))
+        batch_ids.append(img_id)
+        batch_images.append(image)
 
-        pred = predict_single(
+        # Process batch when full
+        if len(batch_images) >= batch_size:
+            preds = predict_batch(
+                model,
+                processor,
+                batch_images,
+                max_new_tokens=inf_cfg["max_new_tokens"],
+                num_beams=inf_cfg["num_beams"],
+            )
+            for bid, pred in zip(batch_ids, preds):
+                results.append({"ID": bid, "Target": pred})
+
+            batch_ids = []
+            batch_images = []
+
+    # Process remaining images
+    if batch_images:
+        preds = predict_batch(
             model,
             processor,
-            image,
+            batch_images,
             max_new_tokens=inf_cfg["max_new_tokens"],
             num_beams=inf_cfg["num_beams"],
         )
-
-        results.append({"ID": img_id, "Target": pred})
+        for bid, pred in zip(batch_ids, preds):
+            results.append({"ID": bid, "Target": pred})
 
     # Save submission
     out_df = pd.DataFrame(results)
@@ -419,6 +593,11 @@ def main():
         action="store_true",
         help="Use K-Fold ensemble inference (loads all fold_*/best/ checkpoints)",
     )
+    parser.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Clear cached fold predictions and re-run all inference (K-Fold only)",
+    )
     args = parser.parse_args()
 
     config_path = SCRIPT_DIR / args.config
@@ -432,7 +611,7 @@ def main():
     if args.kfold:
         # K-Fold ensemble inference
         print("Running K-Fold ensemble inference...")
-        run_kfold_inference(cfg)
+        run_kfold_inference(cfg, clear_cache=args.clear_cache)
     else:
         # Single model inference
         if args.checkpoint:
