@@ -30,24 +30,24 @@ data:
   # each fold has similar length distribution.
 
 training:
-  output_dir: "outputs/qwen3-2b-kfold"  # Qwen3-VL-2B with K-Fold
+  output_dir: "outputs/qwen3-2b-kfold-v2"  # Qwen3-VL-2B optimized
 
   # Batch - Larger than 7B (2B uses less VRAM)
   batch_size: 8  # increased from 4 (2B model = half VRAM)
   gradient_accumulation_steps: 2  # effective batch = 16 (same as 7B)
 
-  # Schedule - More epochs for smaller model
-  epochs: 7  # increased from 5 - smaller model trains faster
-  learning_rate: 3.0e-5  # higher than 7B - smaller model needs stronger signal
-  warmup_ratio: 0.15
+  # Schedule - Conservative to prevent overfitting
+  epochs: 4  # reduced from 7 - prevent overfitting on 4K samples
+  learning_rate: 2e-5  # reduced from 3e-5 - more stable training
+  warmup_ratio: 0.1  # reduced from 0.15 - standard warmup
   lr_scheduler: "cosine"
-  weight_decay: 0.01  # lighter regularization for smaller model
+  weight_decay: 0.05  # increased from 0.01 - stronger regularization
   max_grad_norm: 1.0
 
-  # LoRA - Balanced for 2B model
-  lora_r: 96  # between 64-128 - good for 2B
-  lora_alpha: 192  # maintain 2:1 ratio
-  lora_dropout: 0.05
+  # LoRA - Conservative for 2B model + 4K samples
+  lora_r: 64  # reduced from 96 - prevent overfitting
+  lora_alpha: 128  # maintain 2:1 ratio
+  lora_dropout: 0.1  # increased from 0.05 - better regularization
   lora_target_modules:
     - "q_proj"
     - "k_proj"
@@ -57,8 +57,8 @@ training:
     - "up_proj"
     - "down_proj"
 
-  # Image - Higher resolution than 7B (more VRAM available)
-  max_pixels: 3000000  # ~1732x1732 - increased from 2.5M
+  # Image - Proven resolution for historical documents
+  max_pixels: 2016000  # ~1420x1420 - optimal for degraded text
 
   # Eval & Save
   eval_steps: 100
@@ -83,15 +83,22 @@ augmentation:
 inference:
   # Use "best" checkpoint (saved at lowest eval_loss during training)
   # For K-Fold: use --kfold flag to ensemble all fold_*/best/ checkpoints
-  checkpoint: "outputs/qwen3-2b-kfold/fold_1/best"  # default to fold 1
+  # Previous run: eval_loss ~0.83 (overfitted) - v2 should reach ~0.70-0.75
+  checkpoint: "outputs/qwen3-2b-kfold-v2/fold_1/best"  # default to fold 1
   output_csv: "submission.csv"
   max_new_tokens: 256
   num_beams: 5
   batch_size: 2  # can be larger for 2B model
 
-# Notes on Qwen3-VL-2B Advantages:
+# Notes on Qwen3-VL-2B Configuration:
 # - Improved OCR: 32 languages, robust to blur/tilt, better ancient characters
 # - DeepStack: Captures fine-grained details in degraded text
 # - 3x faster training: ~1h/fold vs 3h for 7B
-# - Lower VRAM: Can use larger batch size and higher resolution
-# - Architecture improvements may overcome parameter disadvantage for OCR tasks
+# - Lower VRAM: Can use larger batch size
+#
+# V2 Optimizations (fix for 0.83 → target 0.70-0.75):
+# - Reduced epochs: 7→4 (prevent overfitting)
+# - Reduced LR: 3e-5→2e-5 (more stable)
+# - Increased regularization: weight_decay 0.01→0.05, dropout 0.05→0.1
+# - Reduced LoRA rank: 96→64 (better for 4K samples)
+# - Conservative resolution: 3M→2M pixels (proven optimal)

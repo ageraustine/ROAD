@@ -30,24 +30,24 @@ data:
   # This is critical for reliable WER/CER metrics on small datasets.
 
 training:
-  output_dir: "outputs/qwen2vl-7b-run3"  # run3 - increased capacity
+  output_dir: "outputs/qwen2vl-7b-run4"  # run4 - optimized config
 
   # Batch
   batch_size: 4
   gradient_accumulation_steps: 4  # effective = 16
 
-  # Schedule (more epochs with early stopping)
-  epochs: 5  # increased from 3 - allow more training time
-  learning_rate: 1.5e-5  # slightly lower for stability with larger rank
-  warmup_ratio: 0.15  # longer warmup
+  # Schedule - optimal for 4K dataset
+  epochs: 3  # sweet spot for dataset size
+  learning_rate: 2e-5  # standard for Qwen2-VL
+  warmup_ratio: 0.1  # 10% warmup
   lr_scheduler: "cosine"
-  weight_decay: 0.02  # reduced from 0.05 - less regularization
+  weight_decay: 0.05  # stronger regularization to prevent overfitting
   max_grad_norm: 1.0
 
-  # LoRA (increased capacity, reduced dropout)
-  lora_r: 128  # doubled from 64 - more capacity
-  lora_alpha: 256  # maintain 2:1 ratio
-  lora_dropout: 0.05  # reduced from 0.1 - less regularization
+  # LoRA - balanced capacity for 4K samples
+  lora_r: 64  # optimal for this dataset size
+  lora_alpha: 128  # 2:1 ratio
+  lora_dropout: 0.1  # proper regularization
   lora_target_modules:
     - "q_proj"
     - "k_proj"
@@ -57,8 +57,8 @@ training:
     - "up_proj"
     - "down_proj"
 
-  # Image
-  max_pixels: 2500000  # ~1581x1581 - increased resolution for more detail
+  # Image - proven resolution
+  max_pixels: 2016000  # ~1420x1420 - stable and efficient
 
   # Eval & Save
   eval_steps: 100
@@ -82,8 +82,8 @@ augmentation:
 
 inference:
   # Use "best" checkpoint (saved at lowest eval_loss during training)
-  # Run1: eval_loss=0.7017, Run2: eval_loss=0.67
-  checkpoint: "outputs/qwen2vl-7b-run3/best"  # update to match current run
+  # Run1: eval_loss=0.7017, Run2: eval_loss=0.67, Run3: eval_loss=0.8045 (overfitted)
+  checkpoint: "outputs/qwen2vl-7b-run4/best"  # run4: optimized config
   output_csv: "submission.csv"
   max_new_tokens: 256
   num_beams: 5
