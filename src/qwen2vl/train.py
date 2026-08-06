@@ -756,20 +756,27 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
         raise ValueError("metric_for_best_model='eval_cer' requires compute_cer: true")
 
     # Early stopping callback (prevent wasting compute on plateaued folds)
+    # IMPORTANT: Early stopping should monitor eval_loss (stable signal), while
+    # metric_for_best_model can be eval_cer (what matters for leaderboard).
     early_stop_cfg = train_cfg.get("early_stopping", {})
     if early_stop_cfg.get("enabled", True):
         patience = early_stop_cfg.get("patience", 3)
         min_delta = early_stop_cfg.get("min_delta", 0.0001)
 
+        # Use dedicated early stopping metric (defaults to eval_loss for stability)
+        # eval_loss: computed on full val set, deterministic, low variance
+        # eval_cer: computed on 200 samples, generative, high variance (bad for early stop)
+        early_stop_metric = early_stop_cfg.get("metric", "eval_loss")
+
         callbacks.append(EarlyStoppingCallback(
             patience=patience,
             min_delta=min_delta,
-            metric=metric,
+            metric=early_stop_metric,
             greater_is_better=False,  # eval_loss and eval_cer: lower is better
         ))
 
         if not is_kfold:
-            print(f"  early_stopping: patience={patience}, min_delta={min_delta}")
+            print(f"  early_stopping: metric={early_stop_metric}, patience={patience}, min_delta={min_delta}")
 
     trainer = Trainer(
         model=model,

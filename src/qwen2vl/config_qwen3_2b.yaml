@@ -76,10 +76,13 @@ training:
   # Critical for K-fold CV where each fold can take 1+ hours
   early_stopping:
     enabled: true
+    metric: "eval_loss"  # Monitor eval_loss (stable) not eval_cer (noisy)
     patience: 3  # Stop if no improvement for 3 evaluations (3 * eval_steps = 300 steps)
     min_delta: 0.0001  # Minimum improvement to count as progress
     # Example: If eval_loss stays at 0.7500, 0.7501, 0.7499 for 3 evals → stop
     # Saves ~1 epoch per fold when model plateaus early
+    # Note: metric_for_best_model can be eval_cer (competition metric), but
+    # early stopping needs stable signal → always use eval_loss here
 
 augmentation:
   enabled: true

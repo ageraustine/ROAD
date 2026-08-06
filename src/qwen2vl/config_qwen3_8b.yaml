@@ -75,6 +75,19 @@ training:
 
   num_workers: 8
 
+  # Early stopping - prevent wasting compute on plateaued folds
+  # For 8B model with smaller dataset, can plateau quickly
+  early_stopping:
+    enabled: true
+    metric: "eval_loss"  # Monitor eval_loss (stable) not eval_cer (noisy)
+    patience: 3  # Stop if no improvement for 3 evaluations
+    min_delta: 0.0001  # Minimum improvement to count as progress
+    # Note: metric_for_best_model is eval_cer (competition metric), but
+    # early stopping needs stable signal → use eval_loss here
+
+  # Resume from checkpoint
+  resume_from_checkpoint: true  # Auto-resume from last checkpoint if interrupted
+
 augmentation:
   enabled: true               # now applied to TRAIN ONLY
   p_blur: 0.0

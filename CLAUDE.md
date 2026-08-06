@@ -116,7 +116,7 @@ python eval_metrics.py # Evaluate
 - **High-res processing**: 2M pixels (~1344x1500) - analyze with `run_image_analysis.sh`
 - **Beam search**: 5 beams for better decoding
 - **Auto-resume**: Training resumes from checkpoint if interrupted (critical for Colab)
-- **Early stopping**: Stops fold training when eval_loss plateaus (saves 25-40% time in K-fold)
+- **Early stopping**: Monitors eval_loss (stable signal) to detect plateaus, while best model selection uses eval_cer (competition metric). Saves 25-40% time in K-fold.
 
 ### Training Setup
 
