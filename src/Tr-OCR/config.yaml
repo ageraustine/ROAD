@@ -1,0 +1,84 @@
+# TrOCR Fine-tuning Config - Historical HTR
+# Hardware: A100 80GB (fits comfortably; trocr-large is ~334M params)
+#
+# REQUIRES SINGLE-LINE IMAGE CROPS. TrOCR squashes every input to 384x384 with
+# no aspect-ratio preservation - a full page becomes unreadable.
+
+model:
+  # trocr-large-handwritten (~334M) is the strong default.
+  # trocr-base-handwritten (~62M) trains ~4x faster - use it to sweep
+  # preprocessing/augmentation settings, then confirm on large.
+  name: "microsoft/trocr-large-handwritten"
+
+data:
+  train_csv: "dataset/Train.csv"
+  test_csv: "dataset/Test.csv"
+  image_dir: "dataset/images"
+  image_ext: ".jpg"
+
+  k_folds: 5
+  val_split: 0.1        # only used when k_folds == 1
+  seed: 42
+  group_col: null       # set to a page/scribe column if one exists
+
+training:
+  output_dir: "outputs/trocr-large-v1"
+
+  # No LoRA - at 334M, full fine-tuning is both affordable and better.
+  batch_size: 16
+  eval_batch_size: 32
+  gradient_accumulation_steps: 1
+
+  # TrOCR tolerates far more epochs than a VLM. The Transkribus study found
+  # 5 epochs best across their historical datasets; published ablations run 20.
+  # Start at 12 and let the CER curve tell you.
+  epochs: 12
+  learning_rate: 0.00004   # 4e-5 - higher than the VLM because this is full FT
+  warmup_ratio: 0.05
+  lr_scheduler: "cosine"
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  gradient_checkpointing: false   # unnecessary at this size
+
+  # Freezing. 0 = train everything. Try 6 if you see fast overfitting;
+  # -1 freezes the encoder entirely (decoder-only adaptation).
+  freeze_encoder_layers: 0
+
+  # Set from the target-length stats the script prints on startup.
+  # Too low silently truncates targets and teaches early stopping.
+  max_target_length: 128
+
+  # Greedy during training (fast); switch to beams only for submission.
+  eval_num_beams: 1
+  no_repeat_ngram_size: 0   # keep 0 - real transcriptions do repeat n-grams
+  length_penalty: 1.0
+
+  eval_steps: 100
+  save_steps: 100
+  save_total_limit: 2
+  logging_steps: 25
+  metric_for_best_model: "eval_cer"   # real CER, not a loss proxy
+  num_workers: 8
+
+preprocessing:
+  autocontrast: true          # one of the three knobs that moved CER in ablations
+  autocontrast_cutoff: 2
+  grayscale: false
+  invert_if_dark: true
+
+augmentation:
+  enabled: true
+  # Rotation and elastic are the two that beat baseline in published HTR runs.
+  p_rotate: 0.3
+  max_rotation: 2
+  p_elastic: 0.3
+  elastic_alpha: 30.0
+  elastic_sigma: 5.0
+  p_brightness: 0.3
+  p_contrast: 0.3
+
+inference:
+  checkpoint: "outputs/trocr-large-v1/fold_1/best"
+  output_csv: "submission_trocr.csv"
+  num_beams: 5
+  batch_size: 32

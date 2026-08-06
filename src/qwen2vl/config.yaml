@@ -69,6 +69,18 @@ training:
   # Workers
   num_workers: 8
 
+  # Resume from checkpoint
+  resume_from_checkpoint: true  # Auto-resume from last checkpoint if training interrupted
+
+  # Early stopping - prevent wasting compute on plateaued folds
+  # Critical for K-fold CV where each fold can take hours
+  early_stopping:
+    enabled: true
+    patience: 3  # Stop if no improvement for 3 evaluations (3 * eval_steps = 300 steps)
+    min_delta: 0.0001  # Minimum improvement to count as progress
+    # Example: If eval_loss stays at 0.7500, 0.7501, 0.7499 for 3 evals → stop
+    # Saves significant compute when model plateaus early
+
 augmentation:
   enabled: true
   # Focus on realistic scanning variations only

@@ -51,6 +51,23 @@ Located in `src/`:
 - `eval_metrics.py` - Calculate WER/CER
 - `train.py` or `trainer.py` - Training script (VLM/Kraken)
 
+## Image Analysis Tool
+
+Before training, analyze your dataset to determine optimal image resolution settings:
+
+```bash
+# Analyze dataset/images to find optimal max_pixels
+bash run_image_analysis.sh
+```
+
+This provides:
+- Image dimension statistics (width, height, pixels)
+- Resize impact at different thresholds
+- Recommendations for config.yaml max_pixels setting
+- Critical for balancing quality vs training speed
+
+See `IMAGE_ANALYSIS_README.md` for details.
+
 ## Quick Start
 
 ```bash
@@ -96,10 +113,19 @@ python eval_metrics.py # Evaluate
 ### Key Features
 - **Conservative augmentation**: Brightness, contrast, rotation only (no blur/noise on already-degraded documents)
 - **Curriculum learning ready**: Easy/hard sample separation
-- **High-res processing**: 2M pixels (~1344x1500)
+- **High-res processing**: 2M pixels (~1344x1500) - analyze with `run_image_analysis.sh`
 - **Beam search**: 5 beams for better decoding
+- **Auto-resume**: Training resumes from checkpoint if interrupted (critical for Colab)
+- **Early stopping**: Stops fold training when eval_loss plateaus (saves 25-40% time in K-fold)
 
 ### Training Setup
+
+**Step 0: Analyze Dataset (Recommended)**
+```bash
+# Analyze images to determine optimal max_pixels setting
+bash run_image_analysis.sh
+# Update max_pixels in config files based on recommendations
+```
 
 **Option 1: Google Colab (Recommended)**
 ```
@@ -115,6 +141,7 @@ pip install -r requirements.txt
 python train.py
 
 # Expected training time: ~6-8 hours on A100 80GB
+# Auto-resumes from checkpoint if interrupted
 ```
 
 ### Inference
