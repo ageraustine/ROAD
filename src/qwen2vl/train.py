@@ -38,6 +38,7 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 from datasets import Dataset
 from tqdm import tqdm
 
+import transformers
 from transformers import (
     AutoProcessor,
     TrainingArguments,
@@ -402,11 +403,14 @@ class CERCallback(TrainerCallback):
     """
 
     def __init__(self, processor, dataset, max_pixels: int, n_samples: int = 200,
-                 max_new_tokens: int = 256, batch_size: int = 4, seed: int = 42):
+                 max_new_tokens: int = 256, batch_size: int = 4, seed: int = 42,
+                 is_kfold: bool = False, verbose: bool = False):
         self.processor = processor
         self.max_pixels = max_pixels
         self.max_new_tokens = max_new_tokens
         self.batch_size = batch_size
+        self.is_kfold = is_kfold
+        self.verbose = verbose
 
         n = min(n_samples, len(dataset))
         idx = np.random.RandomState(seed).choice(len(dataset), n, replace=False)
@@ -471,7 +475,58 @@ class CERCallback(TrainerCallback):
 
         cer = corpus_cer(preds, refs)
         metrics["eval_cer"] = cer
-        print(f"  eval_cer = {cer:.4f}  (greedy, n={len(preds)})")
+
+        # Only print CER if improved (less verbose for non-kfold)
+        if not hasattr(self, 'best_cer'):
+            self.best_cer = float('inf')
+
+        if cer < self.best_cer:
+            self.best_cer = cer
+            if not getattr(self, 'is_kfold', False):
+                print(f"eval_cer={cer:.4f} ✓ (new best)")
+        elif getattr(self, 'verbose', False):
+            print(f"eval_cer={cer:.4f}")
+
+
+class ProgressCallback(TrainerCallback):
+    """Print clean progress updates instead of verbose tqdm bars."""
+
+    def __init__(self, log_every_n_steps: int = 50):
+        self.log_every_n_steps = log_every_n_steps
+        self.last_log_step = 0
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Print clean training progress."""
+        if logs is None:
+            return
+
+        # Only log at intervals
+        if state.global_step - self.last_log_step < self.log_every_n_steps:
+            return
+
+        self.last_log_step = state.global_step
+
+        # Build compact log line
+        parts = []
+        if "loss" in logs:
+            parts.append(f"loss={logs['loss']:.4f}")
+        if "learning_rate" in logs:
+            parts.append(f"lr={logs['learning_rate']:.2e}")
+        if "epoch" in logs:
+            parts.append(f"epoch={logs['epoch']:.2f}")
+
+        if parts:
+            progress = f"Step {state.global_step}/{state.max_steps}"
+            print(f"{progress} | {' | '.join(parts)}")
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Print evaluation results (eval_loss only - CER callback handles eval_cer)."""
+        if metrics is None:
+            return
+
+        # Only print eval_loss (CER callback handles eval_cer printing)
+        if "eval_loss" in metrics:
+            print(f"Eval @ step {state.global_step} | eval_loss={metrics['eval_loss']:.4f}")
 
 
 class EarlyStoppingCallback(TrainerCallback):
@@ -483,18 +538,21 @@ class EarlyStoppingCallback(TrainerCallback):
     """
 
     def __init__(self, patience: int = 3, min_delta: float = 0.0001,
-                 metric: str = "eval_loss", greater_is_better: bool = False):
+                 metric: str = "eval_loss", greater_is_better: bool = False,
+                 verbose: bool = False):
         """
         Args:
             patience: Number of evaluations with no improvement before stopping
             min_delta: Minimum change to qualify as improvement
             metric: Metric to monitor (eval_loss or eval_cer)
             greater_is_better: True if higher is better (False for loss/cer)
+            verbose: Print patience counter on every evaluation (False = only on stop)
         """
         self.patience = patience
         self.min_delta = min_delta
         self.metric = metric
         self.greater_is_better = greater_is_better
+        self.verbose = verbose
 
         self.best_value = float('inf') if not greater_is_better else float('-inf')
         self.patience_counter = 0
@@ -518,8 +576,8 @@ class EarlyStoppingCallback(TrainerCallback):
         else:
             self.patience_counter += 1
 
-        # Log progress
-        if self.patience_counter > 0:
+        # Log progress (only if verbose)
+        if self.verbose and self.patience_counter > 0:
             print(f"  Early stopping: {self.patience_counter}/{self.patience} "
                   f"(no improvement in {self.metric})")
 
@@ -715,6 +773,9 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
     )
     print(f"Steps: {steps_per_epoch}/epoch × {train_cfg['epochs']} epochs = {total_steps} total")
 
+    # Reduce logging frequency for non-kfold (less spam)
+    log_steps = train_cfg.get("logging_steps", 50 if not is_kfold else 25)
+
     ta_kwargs = dict(
         output_dir=str(fold_output_dir),
         per_device_train_batch_size=train_cfg["batch_size"],
@@ -727,7 +788,10 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
         weight_decay=train_cfg["weight_decay"],
         max_grad_norm=train_cfg["max_grad_norm"],
         bf16=True,
-        logging_steps=train_cfg.get("logging_steps", 25),
+        logging_steps=log_steps,
+        logging_strategy="steps",
+        logging_first_step=False,
+        logging_nan_inf_filter=True,  # Suppress NaN/inf warnings
         eval_strategy="steps",
         eval_steps=train_cfg["eval_steps"],
         save_strategy="steps",
@@ -743,11 +807,17 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
         report_to="none",
         seed=data_cfg.get("seed", 42),
         data_seed=data_cfg.get("seed", 42),
-        disable_tqdm=is_kfold,
+        disable_tqdm=True,  # Disable all progress bars (too verbose)
+        log_level="error",  # Suppress info logs from trainer
+        log_level_replica="error",
     )
     args = TrainingArguments(**supported_kwargs(TrainingArguments, ta_kwargs))
 
     callbacks = []
+
+    # Progress callback (replaces verbose tqdm with clean updates)
+    if not is_kfold:
+        callbacks.append(ProgressCallback(log_every_n_steps=log_steps))
 
     # Optional CER computation callback
     if train_cfg.get("compute_cer", True):
@@ -759,6 +829,8 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
             max_new_tokens=cfg.get("inference", {}).get("max_new_tokens", 256),
             batch_size=eval_bs,
             seed=data_cfg.get("seed", 42),
+            is_kfold=is_kfold,
+            verbose=False,  # Only print improvements
         ))
     elif metric == "eval_cer":
         raise ValueError("metric_for_best_model='eval_cer' requires compute_cer: true")
@@ -781,11 +853,10 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
             min_delta=min_delta,
             metric=early_stop_metric,
             greater_is_better=False,  # eval_loss and eval_cer: lower is better
+            verbose=False,  # Don't print patience counter every eval
         ))
 
-        if not is_kfold:
-            print(f"  early_stopping: metric={early_stop_metric}, patience={patience}, min_delta={min_delta}")
-
+    # Create trainer without default callbacks (too verbose)
     trainer = Trainer(
         model=model,
         args=args,
@@ -794,6 +865,9 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
         data_collator=train_collator,
         callbacks=callbacks,
     )
+
+    # Remove default progress callback (replaced by our ProgressCallback)
+    trainer.remove_callback(transformers.trainer_callback.ProgressCallback)
     # Trainer has no eval_data_collator arg; swap it in for the eval dataloader only.
     _base_get_eval = trainer.get_eval_dataloader
 
