@@ -20,8 +20,8 @@ data:
 training:
   output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s1"
 
-  batch_size: 4
-  eval_batch_size: 4
+  batch_size: 2
+  eval_batch_size: 2
   gradient_accumulation_steps: 8  # effective batch = 16
 
   # Extended training with anti-overfitting measures
@@ -37,8 +37,8 @@ training:
   gradient_checkpointing: true
 
   # LoRA config - rsLoRA for stable scaling across ranks
-  lora_r: 32  # High capacity with rsLoRA stability (2x original 64)
-  lora_alpha: 64
+  lora_r: 64  # High capacity with rsLoRA stability (2x original 64)
+  lora_alpha: 128
   lora_dropout: 0.18  # Strong regularization to prevent overfitting
   use_rslora: true  # Rank-Stabilized LoRA (scaling = alpha/sqrt(r) = 128/11.3 = 11.3x)
   lora_target_modules:
