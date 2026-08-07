@@ -24,34 +24,42 @@ training:
   eval_batch_size: 2
   gradient_accumulation_steps: 8  # effective batch = 16
 
-  # Extended training with anti-overfitting measures
-  # v2 overfitted at 4 epochs, so v1 uses stronger regularization for 10 epochs
+  # Asymmetric LoRA training - higher LR with lower base rank
   epochs: 4
-  learning_rate: 0.000015  # Lower LR (1.5e-5, was 2e-5) for more stable convergence
-  warmup_ratio: 0.12  # Slightly longer warmup for stability
+  learning_rate: 0.00015  # 1.5e-4 (higher for lower rank + asymmetric setup)
+  warmup_ratio: 0.12
   lr_scheduler: "cosine"
 
-  # STRONGER regularization to prevent overfitting like v2
-  weight_decay: 0.12  # Increased from 0.1 (stronger L2 regularization)
+  # Regularization - lighter with asymmetric LoRA
+  weight_decay: 0.01  # Lighter regularization (asymmetric setup is naturally more regularized)
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  # LoRA config - rsLoRA for stable scaling across ranks
-  lora_r: 64  # High capacity with rsLoRA stability (2x original 64)
-  lora_alpha: 128
-  lora_dropout: 0.18  # Strong regularization to prevent overfitting
-  use_rslora: true  # Rank-Stabilized LoRA (scaling = alpha/sqrt(r) = 128/11.3 = 11.3x)
-  lora_target_modules:
-    - "q_proj"
-    - "k_proj"
-    - "v_proj"
-    - "o_proj"
-    - "gate_proj"
-    - "up_proj"
-    - "down_proj"
+  # LoRA config - Asymmetric ranks (Vision r=64, LLM r=16)
+  # Vision tower needs capacity for new script; LLM just needs task adaptation
+  lora_r: 16  # Base rank for LLM
+  lora_alpha: 32
+  lora_dropout: 0.05  # Lower dropout with lower base rank
+  use_rslora: true  # Rank-Stabilized LoRA
 
-  lora_modules_to_save:
-    - "merger"  # Train vision projector
+  # Rank asymmetry - Vision r=64, LLM r=16 (~78M params vs uniform r=32's 105M)
+  rank_pattern:
+    qkv: 64         # Vision attention (critical for stroke patterns)
+    proj: 64        # Vision output projection
+    linear_fc1: 64  # Vision MLP layer 1 (learns visual features)
+    linear_fc2: 64  # Vision MLP layer 2 (learns visual features)
+  alpha_pattern:
+    qkv: 128
+    proj: 128
+    linear_fc1: 128
+    linear_fc2: 128
+
+  # Target modules - Covers vision tower + DeepStack mergers + LLM
+  # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
+  # LLM: self_attn (q/k/v/o_proj) + mlp (gate/up/down_proj)
+  lora_target_modules: '^model\.(?:visual\.(?:blocks\.\d+\.(?:attn\.(?:qkv|proj)|mlp\.linear_fc[12])|merger\.linear_fc[12]|deepstack_merger_list\.\d+\.linear_fc[12])|language_model\.layers\.\d+\.(?:self_attn\.[qkvo]_proj|mlp\.(?:gate|up|down)_proj))'
+
+  lora_modules_to_save: null  # Merger covered in target_modules regex
 
   max_pixels: 2016000
 

@@ -816,19 +816,32 @@ def setup_model(cfg: dict):
         modules_to_save=train_cfg.get("lora_modules_to_save"),
         lora_dropout=train_cfg["lora_dropout"],
         use_rslora=train_cfg.get("use_rslora", False),  # Rank-Stabilized LoRA
+        rank_pattern=train_cfg.get("rank_pattern"),  # Asymmetric ranks (e.g., vision=64, llm=16)
+        alpha_pattern=train_cfg.get("alpha_pattern"),  # Matching alpha for asymmetric ranks
         bias="none",
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, lora_config)
 
-    # Count trainable params (fail loudly if zero)
-    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    if n_trainable == 0:
-        raise RuntimeError("LoRA matched zero modules. Check lora_target_modules.")
+    # Verify LoRA targeting - check structure, not just total
+    from peft.tuners.lora import LoraLayer
+    lora_modules = [n for n, m in model.named_modules() if isinstance(m, LoraLayer)]
+    vision_modules = sum(1 for n in lora_modules if ".visual." in n)
+    llm_modules = sum(1 for n in lora_modules if ".language_model." in n)
 
+    # Count trainable params
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
     trainable_pct = 100 * n_trainable / n_total
+
     print(f"✓ ({n_trainable/1e6:.1f}M trainable / {n_total/1e6:.0f}M total = {trainable_pct:.2f}%)")
+    print(f"  LoRA modules: {len(lora_modules)} total ({vision_modules} vision / {llm_modules} llm)")
+
+    # Sanity checks
+    if n_trainable == 0:
+        raise RuntimeError("LoRA matched zero modules. Check lora_target_modules regex.")
+    if vision_modules == 0:
+        raise RuntimeError(f"LoRA matched 0 vision modules (expected ~116). Check target_modules regex.")
 
     return model, processor
 
