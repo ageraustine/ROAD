@@ -27,6 +27,8 @@ import yaml
 import torch
 import pandas as pd
 import numpy as np
+import cv2
+from io import BytesIO
 from PIL import Image, ImageFilter, ImageEnhance
 from sklearn.model_selection import train_test_split, StratifiedKFold
 
@@ -241,6 +243,13 @@ class ImageAugmenter:
         self.p_rotate = cfg.get("p_rotate", 0.1)
         self.max_rotation = cfg.get("max_rotation", 1)
 
+        # Advanced HTR augmentations
+        self.p_morphology = cfg.get("p_morphology", 0.0)  # dilate/erode (ink thickness)
+        self.p_shear = cfg.get("p_shear", 0.0)  # slant jitter (scribe variation)
+        self.max_shear = cfg.get("max_shear", 8)  # degrees
+        self.p_resolution = cfg.get("p_resolution", 0.0)  # resolution jitter
+        self.p_jpeg = cfg.get("p_jpeg", 0.0)  # JPEG artifacts
+
     def __call__(self, img: Image.Image) -> Image.Image:
         if not self.enabled:
             return img
@@ -262,6 +271,56 @@ class ImageAugmenter:
             arr = np.array(img).astype(np.float32)
             arr += np.random.normal(0, random.uniform(5, 15), arr.shape)
             img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+
+        # Morphological ops (models ink thickness, pen pressure, ink loading)
+        if random.random() < self.p_morphology:
+            arr = np.array(img)
+            kernel_size = random.choice([2, 3])
+            kernel = np.ones((kernel_size, kernel_size), np.uint8)
+
+            # Dilate (thicken) or erode (thin) with equal probability
+            if random.random() < 0.5:
+                arr = cv2.dilate(arr, kernel, iterations=1)
+            else:
+                arr = cv2.erode(arr, kernel, iterations=1)
+
+            # Slight blur to simulate ink diffusion into paper fibers
+            arr = cv2.GaussianBlur(arr, (3, 3), 0.5)
+            img = Image.fromarray(arr)
+
+        # Shear/slant jitter (models different scribe handwriting angles)
+        if random.random() < self.p_shear:
+            angle_deg = random.uniform(-self.max_shear, self.max_shear)
+            angle_rad = np.deg2rad(angle_deg)
+            w, h = img.size
+
+            # Affine transform for horizontal shear
+            shear_factor = np.tan(angle_rad)
+            img = img.transform(
+                (w, h),
+                Image.AFFINE,
+                (1, shear_factor, -shear_factor * h / 2, 0, 1, 0),
+                fillcolor=(255, 255, 255),
+                resample=Image.BILINEAR
+            )
+
+        # Resolution jitter (prevents overfitting to exact pixel budget)
+        if random.random() < self.p_resolution:
+            w, h = img.size
+            scale = random.uniform(0.6, 1.0)
+            new_w, new_h = int(w * scale), int(h * scale)
+
+            # Downscale then upscale back (simulates lower resolution scans)
+            img = img.resize((new_w, new_h), Image.BILINEAR)
+            img = img.resize((w, h), Image.BILINEAR)
+
+        # JPEG artifacts (models scan compression)
+        if random.random() < self.p_jpeg:
+            buffer = BytesIO()
+            quality = random.randint(60, 90)
+            img.save(buffer, format='JPEG', quality=quality)
+            buffer.seek(0)
+            img = Image.open(buffer).convert('RGB')
 
         return img
 
@@ -1007,16 +1066,49 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
     return result
 
 
+def compute_image_difficulty(image_path: str) -> float:
+    """
+    Compute difficulty proxy: image variance (std dev).
+    Low variance = faded/degraded = harder to read.
+    High variance = clear contrast = easier to read.
+    """
+    img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return 0.0  # Fallback for missing images
+    return float(img.std())
+
+
 def make_splits(df: pd.DataFrame, data_cfg: dict):
-    """Yield (train_df, val_df, fold_num). Grouped by group_col when present."""
+    """Yield (train_df, val_df, fold_num). Stratified by text length + image difficulty. Grouped by group_col when present."""
     df = df.copy()
+    image_dir = REPO_ROOT / data_cfg["image_dir"]
+
+    # Compute text length
     df["_len"] = df["Target"].astype(str).str.len()
-    df["_bin"] = pd.qcut(df["_len"], q=5, labels=False, duplicates="drop")
+
+    # Compute image difficulty (variance/std - low = degraded/hard, high = clear/easy)
+    print("Computing image difficulty scores (variance)...")
+    df["_difficulty"] = df["ID"].apply(lambda id: compute_image_difficulty(image_dir / f"{id}.jpg"))
+
+    # Stratify by text length (3 bins)
+    try:
+        df["_len_bin"] = pd.qcut(df["_len"], q=3, labels=["short", "medium", "long"], duplicates="drop")
+    except ValueError:
+        df["_len_bin"] = "medium"  # Fallback if not enough unique values
+
+    # Stratify by difficulty (3 bins)
+    try:
+        df["_diff_bin"] = pd.qcut(df["_difficulty"], q=3, labels=["hard", "medium", "easy"], duplicates="drop")
+    except ValueError:
+        df["_diff_bin"] = "medium"  # Fallback if not enough unique values
+
+    # Combine length + difficulty for multi-factor stratification
+    df["_bin"] = df["_len_bin"].astype(str) + "_" + df["_diff_bin"].astype(str)
 
     k_folds = data_cfg.get("k_folds", 1)
     seed = data_cfg.get("seed", 42)
     group_col = data_cfg.get("group_col")
-    helper = ["_len", "_bin"]
+    helper = ["_len", "_difficulty", "_len_bin", "_diff_bin", "_bin"]
 
     if group_col and group_col not in df.columns:
         raise ValueError(f"group_col '{group_col}' not in the CSV columns")
@@ -1025,13 +1117,13 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
         if group_col:
             if not GROUP_KFOLD_AVAILABLE:
                 raise RuntimeError("group_col needs scikit-learn >= 1.0 for StratifiedGroupKFold")
-            print(f"Grouped 5-fold on '{group_col}' "
-                  f"({df[group_col].nunique()} groups) - prevents writer/page leakage")
+            print(f"Grouped 5-fold on '{group_col}' ({df[group_col].nunique()} groups), "
+                  f"stratified by length + difficulty - prevents writer/page leakage")
             splitter = StratifiedGroupKFold(n_splits=k_folds, shuffle=True, random_state=seed)
             split_iter = splitter.split(df, df["_bin"], groups=df[group_col])
         else:
-            print("Stratified 5-fold by text length. NOTE: if rows share a source "
-                  "page or scribe, set data.group_col to avoid leakage.")
+            print("Stratified 5-fold by text length + image difficulty (3×3 bins). "
+                  "NOTE: if rows share a source page or scribe, set data.group_col to avoid leakage.")
             splitter = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=seed)
             split_iter = splitter.split(df, df["_bin"])
 
@@ -1043,6 +1135,21 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
         train_df, val_df = train_test_split(
             df, test_size=data_cfg["val_split"], stratify=df["_bin"], random_state=seed
         )
+
+        # Log length and difficulty distributions to verify stratification is working
+        train_lens = train_df["_len"]
+        val_lens = val_df["_len"]
+        train_diff = train_df["_difficulty"]
+        val_diff = val_df["_difficulty"]
+
+        print(f"Stratified split by text length + image difficulty (3×3 bins):")
+        print(f"  Train: {len(train_df)} samples")
+        print(f"    Length: min={train_lens.min()}, median={train_lens.median():.0f}, max={train_lens.max()}")
+        print(f"    Difficulty (variance): min={train_diff.min():.1f}, median={train_diff.median():.1f}, max={train_diff.max():.1f}")
+        print(f"  Val:   {len(val_df)} samples")
+        print(f"    Length: min={val_lens.min()}, median={val_lens.median():.0f}, max={val_lens.max()}")
+        print(f"    Difficulty (variance): min={val_diff.min():.1f}, median={val_diff.median():.1f}, max={val_diff.max():.1f}")
+
         yield train_df.drop(columns=helper), val_df.drop(columns=helper), None
 
 

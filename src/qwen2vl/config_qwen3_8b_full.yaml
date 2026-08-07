@@ -74,12 +74,20 @@ training:
 
 augmentation:
   enabled: true
-  p_blur: 0.0  # Keep disabled (documents already degraded)
-  p_noise: 0.0  # Keep disabled (documents already have grain)
-  p_brightness: 0.35  # Increased from 0.3 (more exposure variation)
-  p_contrast: 0.35    # Increased from 0.3 (more ink fade variation)
-  p_rotate: 0.15      # Increased from 0.1 (more alignment variation)
-  max_rotation: 1.5   # Increased from 1.0 (slightly more rotation range)
+  # SAFE augmentations only (documents already degraded)
+  p_blur: 0.0  # Disabled (documents already degraded)
+  p_noise: 0.0  # Disabled (documents already have grain)
+  p_brightness: 0.35  # Safe - models exposure variation
+  p_contrast: 0.35    # Safe - models ink fade variation
+  p_rotate: 0.15      # Safe - small rotation models scan skew
+  max_rotation: 1.5
+
+  # Advanced HTR augmentations - DISABLED (risky on degraded docs)
+  p_morphology: 0.0  # DISABLED - can destroy strokes on faded ink
+  p_shear: 0.0       # DISABLED - distorts characters on degraded text
+  max_shear: 8
+  p_resolution: 0.0  # DISABLED - adds blur to already blurry scans
+  p_jpeg: 0.0        # DISABLED - adds artifacts to already artifacted scans
 
 inference:
   checkpoint: "outputs/qwen3-8b-full/best"
