@@ -24,22 +24,22 @@ training:
   eval_batch_size: 2
   gradient_accumulation_steps: 8  # effective batch = 16
 
-  # With 12.5% more data per epoch, model learns faster
-  # Start conservative (3 epochs) - early stopping will catch if too many
-  epochs: 3
-  learning_rate: 0.00002
-  warmup_ratio: 0.1
+  # Extended training with anti-overfitting measures
+  # v2 overfitted at 4 epochs, so v1 uses stronger regularization for 10 epochs
+  epochs: 10
+  learning_rate: 0.000015  # Lower LR (1.5e-5, was 2e-5) for more stable convergence
+  warmup_ratio: 0.12  # Slightly longer warmup for stability
   lr_scheduler: "cosine"
 
-  # STRONGER regularization (more data = can regularize more)
-  weight_decay: 0.1  # increased from 0.05
+  # STRONGER regularization to prevent overfitting like v2
+  weight_decay: 0.12  # Increased from 0.1 (stronger L2 regularization)
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  # LoRA config - same as before
-  lora_r: 64
+  # LoRA config - conservative for long training
+  lora_r: 64  # Keep at 64 (v2's 96 led to overfitting)
   lora_alpha: 128
-  lora_dropout: 0.15  # increased from 0.1 to reduce hallucination
+  lora_dropout: 0.18  # Increased from 0.15 for stronger regularization
   lora_target_modules:
     - "q_proj"
     - "k_proj"
@@ -65,21 +65,21 @@ training:
   num_workers: 8
   resume_from_checkpoint: true
 
-  # Early stopping
+  # Early stopping - more patient for longer training
   early_stopping:
     enabled: true
     metric: "eval_loss"
-    patience: 3
+    patience: 4  # Increased from 3 (allow more time before stopping)
     min_delta: 0.0001
 
 augmentation:
   enabled: true
-  p_blur: 0.0
-  p_noise: 0.0
-  p_brightness: 0.3
-  p_contrast: 0.3
-  p_rotate: 0.1
-  max_rotation: 1
+  p_blur: 0.0  # Keep disabled (documents already degraded)
+  p_noise: 0.0  # Keep disabled (documents already have grain)
+  p_brightness: 0.35  # Increased from 0.3 (more exposure variation)
+  p_contrast: 0.35    # Increased from 0.3 (more ink fade variation)
+  p_rotate: 0.15      # Increased from 0.1 (more alignment variation)
+  max_rotation: 1.5   # Increased from 1.0 (slightly more rotation range)
 
 inference:
   checkpoint: "outputs/qwen3-8b-full/best"
