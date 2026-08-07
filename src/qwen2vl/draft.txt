@@ -1,0 +1,98 @@
+/content/ROAD/src/qwen2vl
+🚀 Starting training...
+
+Failed to load /usr/local/lib/python3.12/dist-packages/torchao/_C_mxfp8.cpython-310-x86_64-linux-gnu.so: Could not load this library: /usr/local/lib/python3.12/dist-packages/torchao/_C_mxfp8.cpython-310-x86_64-linux-gnu.so
+Failed to load /usr/local/lib/python3.12/dist-packages/torchao/_C_cutlass_90a.abi3.so: Could not load this library: /usr/local/lib/python3.12/dist-packages/torchao/_C_cutlass_90a.abi3.so
+Loaded 4098 samples from Train.csv
+Computing image difficulty scores (variance)...
+Stratified split by text length + image difficulty (3×3 bins):
+  Train: 3688 samples
+    Length: min=37, median=62, max=120
+    Difficulty (variance): min=14.6, median=32.2, max=48.2
+  Val:   410 samples
+    Length: min=38, median=62, max=100
+    Difficulty (variance): min=17.7, median=32.1, max=42.2
+
+======================================================================
+Training | Train: 3688 | Val: 410
+======================================================================
+Loading Qwen3-VL-8B-Instruct... Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+✓ (79.0M trainable / 8846M total = 0.89%)
+  LoRA modules: 368 total (116 vision / 252 llm)
+Steps: 231/epoch × 4 epochs = 924 total
+Starting training...
+
+Step 50/924 | loss=1.0060 | lr=6.68e-05 | epoch=0.22
+{'loss': '1.006', 'grad_norm': '22.55', 'learning_rate': '6.682e-05', 'epoch': '0.2169'}
+Step 100/924 | loss=0.6930 | lr=1.35e-04 | epoch=0.43
+{'loss': '0.693', 'grad_norm': '27', 'learning_rate': '0.000135', 'epoch': '0.4338'}
+{'eval_loss': '0.6648', 'eval_runtime': '77.57', 'eval_samples_per_second': '5.286', 'eval_steps_per_second': '2.643', 'epoch': '0.4338'}
+Eval @ step 100 | eval_loss=0.6648
+eval_score=0.1649 (cer=0.0880, wer=0.2419) ✓ (new best)
+Step 150/924 | loss=0.6909 | lr=1.49e-04 | epoch=0.65
+{'loss': '0.6909', 'grad_norm': '27.88', 'learning_rate': '0.0001492', 'epoch': '0.6508'}
+Step 200/924 | loss=0.7217 | lr=1.46e-04 | epoch=0.87
+{'loss': '0.7217', 'grad_norm': '17.87', 'learning_rate': '0.0001456', 'epoch': '0.8677'}
+{'eval_loss': '0.641', 'eval_runtime': '77.28', 'eval_samples_per_second': '5.305', 'eval_steps_per_second': '2.653', 'epoch': '0.8677'}
+Eval @ step 200 | eval_loss=0.6410
+eval_score=0.1556 (cer=0.0817, wer=0.2295) ✓ (new best)
+Step 250/924 | loss=0.6230 | lr=1.39e-04 | epoch=1.08
+{'loss': '0.623', 'grad_norm': '16.72', 'learning_rate': '0.0001395', 'epoch': '1.082'}
+Step 300/924 | loss=0.5254 | lr=1.31e-04 | epoch=1.30
+{'loss': '0.5254', 'grad_norm': '9.778', 'learning_rate': '0.0001309', 'epoch': '1.299'}
+{'eval_loss': '0.6148', 'eval_runtime': '77.4', 'eval_samples_per_second': '5.297', 'eval_steps_per_second': '2.649', 'epoch': '1.299'}
+Eval @ step 300 | eval_loss=0.6148
+eval_score=0.1499 (cer=0.0779, wer=0.2220) ✓ (new best)
+Step 350/924 | loss=0.4850 | lr=1.20e-04 | epoch=1.52
+{'loss': '0.485', 'grad_norm': '15.18', 'learning_rate': '0.0001203', 'epoch': '1.516'}
+Step 400/924 | loss=0.4771 | lr=1.08e-04 | epoch=1.73
+{'loss': '0.4771', 'grad_norm': '15.14', 'learning_rate': '0.000108', 'epoch': '1.733'}
+{'eval_loss': '0.5889', 'eval_runtime': '77.29', 'eval_samples_per_second': '5.305', 'eval_steps_per_second': '2.652', 'epoch': '1.733'}
+Eval @ step 400 | eval_loss=0.5889
+eval_score=0.1436 (cer=0.0761, wer=0.2110) ✓ (new best)
+Step 450/924 | loss=0.4556 | lr=9.45e-05 | epoch=1.95
+{'loss': '0.4556', 'grad_norm': '12.7', 'learning_rate': '9.446e-05', 'epoch': '1.95'}
+Step 500/924 | loss=0.3054 | lr=8.02e-05 | epoch=2.16
+{'loss': '0.3054', 'grad_norm': '9.416', 'learning_rate': '8.021e-05', 'epoch': '2.165'}
+{'eval_loss': '0.5889', 'eval_runtime': '77.43', 'eval_samples_per_second': '5.295', 'eval_steps_per_second': '2.648', 'epoch': '2.165'}
+Eval @ step 500 | eval_loss=0.5889
+eval_score=0.1317 (cer=0.0652, wer=0.1982) ✓ (new best)
+Step 550/924 | loss=0.2656 | lr=6.58e-05 | epoch=2.38
+{'loss': '0.2656', 'grad_norm': '10.78', 'learning_rate': '6.576e-05', 'epoch': '2.382'}
+Step 600/924 | loss=0.2285 | lr=5.17e-05 | epoch=2.60
+{'loss': '0.2285', 'grad_norm': '7.891', 'learning_rate': '5.166e-05', 'epoch': '2.599'}
+{'eval_loss': '0.5195', 'eval_runtime': '77.35', 'eval_samples_per_second': '5.3', 'eval_steps_per_second': '2.65', 'epoch': '2.599'}
+Eval @ step 600 | eval_loss=0.5195
+eval_score=0.1184 (cer=0.0562, wer=0.1806) ✓ (new best)
+Step 650/924 | loss=0.2249 | lr=3.84e-05 | epoch=2.82
+{'loss': '0.2249', 'grad_norm': '6.263', 'learning_rate': '3.842e-05', 'epoch': '2.816'}
+Step 700/924 | loss=0.2044 | lr=2.65e-05 | epoch=3.03
+{'loss': '0.2044', 'grad_norm': '4.201', 'learning_rate': '2.654e-05', 'epoch': '3.03'}
+{'eval_loss': '0.4883', 'eval_runtime': '77.39', 'eval_samples_per_second': '5.298', 'eval_steps_per_second': '2.649', 'epoch': '3.03'}
+Eval @ step 700 | eval_loss=0.4883
+eval_score=0.1009 (cer=0.0437, wer=0.1581) ✓ (new best)
+Step 750/924 | loss=0.0842 | lr=1.65e-05 | epoch=3.25
+{'loss': '0.08421', 'grad_norm': '6.695', 'learning_rate': '1.647e-05', 'epoch': '3.247'}
+Step 800/924 | loss=0.0751 | lr=8.56e-06 | epoch=3.46
+{'loss': '0.07508', 'grad_norm': '2.446', 'learning_rate': '8.56e-06', 'epoch': '3.464'}
+{'eval_loss': '0.5294', 'eval_runtime': '77.61', 'eval_samples_per_second': '5.283', 'eval_steps_per_second': '2.641', 'epoch': '3.464'}
+Eval @ step 800 | eval_loss=0.5294
+Step 850/924 | loss=0.0745 | lr=3.12e-06 | epoch=3.68
+{'loss': '0.07449', 'grad_norm': '3.994', 'learning_rate': '3.12e-06', 'epoch': '3.681'}
+Step 900/924 | loss=0.0689 | lr=3.49e-07 | epoch=3.90
+{'loss': '0.06895', 'grad_norm': '1.873', 'learning_rate': '3.488e-07', 'epoch': '3.898'}
+{'eval_loss': '0.5337', 'eval_runtime': '77.59', 'eval_samples_per_second': '5.284', 'eval_steps_per_second': '2.642', 'epoch': '3.898'}
+Eval @ step 900 | eval_loss=0.5337
+{'eval_loss': '0.5335', 'eval_runtime': '77.64', 'eval_samples_per_second': '5.281', 'eval_steps_per_second': '2.641', 'epoch': '4'}
+Eval @ step 924 | eval_loss=0.5335
+{'train_runtime': '1.391e+04', 'train_samples_per_second': '1.061', 'train_steps_per_second': '0.066', 'train_loss': '0.3922', 'epoch': '4'}
+
+======================================================================
+✓ Training | eval_score=0.1009 | Completed 4.0 epochs
+  Saved: /content/drive/MyDrive/prd/qwen3-8b-full_s1/best
+======================================================================
+
+Summary -> /content/drive/MyDrive/prd/qwen3-8b-full_s1/summary.json
+
+✓ Training completed in 3.9 hours
+/content/ROAD

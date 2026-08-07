@@ -18,20 +18,20 @@ data:
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s1"
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s2"  # Anti-overfitting version
 
   batch_size: 2
   eval_batch_size: 2
   gradient_accumulation_steps: 8  # effective batch = 16
 
-  # Asymmetric LoRA training - higher LR with lower base rank
-  epochs: 4
-  learning_rate: 0.00015  # 1.5e-4 (higher for lower rank + asymmetric setup)
-  warmup_ratio: 0.12
+  # Maximum single model performance - aiming for 0.87-0.89
+  epochs: 8  # Extended training with very low LR
+  learning_rate: 0.00006  # 6e-5 (very low for careful, long training)
+  warmup_ratio: 0.18  # Longer warmup for stability
   lr_scheduler: "cosine"
 
-  # Regularization - lighter with asymmetric LoRA
-  weight_decay: 0.01  # Lighter regularization (asymmetric setup is naturally more regularized)
+  # Stronger regularization to prevent overfitting with higher vision rank
+  weight_decay: 0.04  # Strong regularization for r=96 vision (was 0.03)
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
@@ -39,20 +39,20 @@ training:
   # Vision tower needs capacity for new script; LLM just needs task adaptation
   lora_r: 16  # Base rank for LLM
   lora_alpha: 32
-  lora_dropout: 0.05  # Lower dropout with lower base rank
+  lora_dropout: 0.1  # Increased from 0.05 (stronger regularization)
   use_rslora: true  # Rank-Stabilized LoRA
 
-  # Rank asymmetry - Vision r=64, LLM r=16 (~78M params vs uniform r=32's 105M)
+  # Rank asymmetry - Vision r=96, LLM r=16 (~120M params, more vision capacity)
   rank_pattern:
-    qkv: 64         # Vision attention (critical for stroke patterns)
-    proj: 64        # Vision output projection
-    linear_fc1: 64  # Vision MLP layer 1 (learns visual features)
-    linear_fc2: 64  # Vision MLP layer 2 (learns visual features)
+    qkv: 96         # Vision attention (critical for stroke patterns) - INCREASED
+    proj: 96        # Vision output projection - INCREASED
+    linear_fc1: 96  # Vision MLP layer 1 (learns visual features) - INCREASED
+    linear_fc2: 96  # Vision MLP layer 2 (learns visual features) - INCREASED
   alpha_pattern:
-    qkv: 128
-    proj: 128
-    linear_fc1: 128
-    linear_fc2: 128
+    qkv: 192        # Scale alpha proportionally
+    proj: 192
+    linear_fc1: 192
+    linear_fc2: 192
 
   # Target modules - Covers vision tower + DeepStack mergers + LLM
   # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
@@ -74,22 +74,23 @@ training:
   num_workers: 8
   resume_from_checkpoint: true
 
-  # Early stopping - more patient for longer training
+  # Early stopping - use competition metric, stop at peak
   early_stopping:
     enabled: true
-    metric: "eval_loss"
-    patience: 4  # Increased from 3 (allow more time before stopping)
-    min_delta: 0.0001
+    metric: "eval_score"  # Use actual competition metric (not loss)
+    patience: 6  # Stop after 6 evals (600 steps) without improvement (longer for 8 epochs)
+    min_delta: 0.0005  # Smaller delta for fine improvements
 
 augmentation:
   enabled: true
   # SAFE augmentations only (documents already degraded)
+  # Increased probabilities to add more variation (fights overfitting)
   p_blur: 0.0  # Disabled (documents already degraded)
   p_noise: 0.0  # Disabled (documents already have grain)
-  p_brightness: 0.35  # Safe - models exposure variation
-  p_contrast: 0.35    # Safe - models ink fade variation
-  p_rotate: 0.15      # Safe - small rotation models scan skew
-  max_rotation: 1.5
+  p_brightness: 0.45  # Increased from 0.35 (more exposure variation)
+  p_contrast: 0.45    # Increased from 0.35 (more ink fade variation)
+  p_rotate: 0.20      # Increased from 0.15 (more scan skew variation)
+  max_rotation: 2.0   # Increased from 1.5 (slightly more range)
 
   # Advanced HTR augmentations - DISABLED (risky on degraded docs)
   p_morphology: 0.0  # DISABLED - can destroy strokes on faded ink
