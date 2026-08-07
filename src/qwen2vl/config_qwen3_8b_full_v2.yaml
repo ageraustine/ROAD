@@ -62,9 +62,9 @@ training:
   # With 4 epochs × 231 steps/epoch = 924 total steps
   # Will evaluate 9 times (every 100 steps)
 
-  # Compute CER for monitoring
-  compute_cer: true
-  metric_for_best_model: "eval_cer"
+  # Compute CER+WER for monitoring (competition metric)
+  compute_cer: true  # Also computes WER and competition score (0.5*WER + 0.5*CER)
+  metric_for_best_model: "eval_score"  # Use competition metric (not just CER)
 
   num_workers: 8
   resume_from_checkpoint: true

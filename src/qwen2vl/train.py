@@ -175,6 +175,53 @@ def corpus_cer(preds: list, refs: list) -> float:
     return total_edits / max(total_chars, 1)
 
 
+def corpus_wer(preds: list, refs: list) -> float:
+    """
+    Aggregate WER: total word edits / total reference words.
+
+    Word tokenization: split on whitespace (simple but effective for historical docs).
+    """
+    total_edits = 0
+    total_words = 0
+
+    for pred, ref in zip(preds, refs):
+        # Simple word tokenization: split on whitespace
+        pred_words = pred.split()
+        ref_words = ref.split()
+
+        # Compute word-level edit distance
+        word_edits = word_levenshtein(pred_words, ref_words)
+        total_edits += word_edits
+        total_words += len(ref_words)
+
+    return total_edits / max(total_words, 1)
+
+
+def word_levenshtein(a: list, b: list) -> int:
+    """Levenshtein distance at word level (instead of character level)."""
+    if len(a) < len(b):
+        a, b = b, a
+
+    if not b:
+        return len(a)
+
+    prev = list(range(len(b) + 1))
+
+    for i, a_word in enumerate(a, 1):
+        curr = [i]
+        for j, b_word in enumerate(b, 1):
+            # Cost: 0 if words match, 1 if different
+            cost = 0 if a_word == b_word else 1
+            curr.append(min(
+                prev[j] + 1,      # deletion
+                curr[j - 1] + 1,  # insertion
+                prev[j - 1] + cost  # substitution
+            ))
+        prev = curr
+
+    return prev[-1]
+
+
 # ─────────────────────────────────────────────────────────────
 # AUGMENTATION
 # ─────────────────────────────────────────────────────────────
@@ -473,19 +520,29 @@ class CERCallback(TrainerCallback):
             if was_training:
                 model.train()
 
+        # Compute both CER and WER (competition uses 0.5*WER + 0.5*CER)
         cer = corpus_cer(preds, refs)
+        wer = corpus_wer(preds, refs)
+        competition_score = 0.5 * wer + 0.5 * cer
+
         metrics["eval_cer"] = cer
+        metrics["eval_wer"] = wer
+        metrics["eval_score"] = competition_score  # Competition metric
 
-        # Only print CER if improved (less verbose for non-kfold)
-        if not hasattr(self, 'best_cer'):
+        # Track best competition score (what matters for leaderboard)
+        if not hasattr(self, 'best_score'):
+            self.best_score = float('inf')
             self.best_cer = float('inf')
+            self.best_wer = float('inf')
 
-        if cer < self.best_cer:
+        if competition_score < self.best_score:
+            self.best_score = competition_score
             self.best_cer = cer
+            self.best_wer = wer
             if not getattr(self, 'is_kfold', False):
-                print(f"eval_cer={cer:.4f} ✓ (new best)")
+                print(f"eval_score={competition_score:.4f} (cer={cer:.4f}, wer={wer:.4f}) ✓ (new best)")
         elif getattr(self, 'verbose', False):
-            print(f"eval_cer={cer:.4f}")
+            print(f"eval_score={competition_score:.4f} (cer={cer:.4f}, wer={wer:.4f})")
 
 
 class ProgressCallback(TrainerCallback):
@@ -915,8 +972,9 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
         "best_metric": trainer.state.best_metric,
         "metric_name": metric,
         "best_eval_loss": min((h["eval_loss"] for h in history), default=None),
-        "best_eval_cer": min((h["eval_cer"] for h in history if "eval_cer" in h),
-                             default=None),
+        "best_eval_cer": min((h["eval_cer"] for h in history if "eval_cer" in h), default=None),
+        "best_eval_wer": min((h["eval_wer"] for h in history if "eval_wer" in h), default=None),
+        "best_eval_score": min((h["eval_score"] for h in history if "eval_score" in h), default=None),
         "train_samples": len(train_dataset),
         "val_samples": len(val_dataset),
         "mask_failures": train_collator.mask_failures + eval_collator.mask_failures,
@@ -928,8 +986,13 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
     print(f"\n{'=' * 70}")
     status = f"Early stopped at epoch {early_stopped:.1f}" if early_stopped else f"Completed {result['epochs_completed']:.1f} epochs"
     print(f"✓ {fold_str} | {metric}={result['best_metric']:.4f} | {status}")
-    if result["best_eval_cer"] is not None:
-        print(f"  eval_cer={result['best_eval_cer']:.4f}")
+
+    # Print competition metrics
+    if result["best_eval_score"] is not None:
+        print(f"  Competition score (0.5*WER + 0.5*CER): {result['best_eval_score']:.4f}")
+    if result["best_eval_cer"] is not None and result["best_eval_wer"] is not None:
+        print(f"  CER: {result['best_eval_cer']:.4f} | WER: {result['best_eval_wer']:.4f}")
+
     if result["mask_failures"]:
         print(f"  ⚠️  {result['mask_failures']} samples failed label masking")
     print(f"  Saved: {best_dir}")
@@ -1010,15 +1073,22 @@ def train(cfg: dict):
         print(f"{'=' * 70}")
         for r in results:
             stop_tag = f" [stopped @ {r['stopped_epoch']:.1f}]" if r.get("early_stopped") else ""
-            cer_str = f" | cer={r['best_eval_cer']:.4f}" if r["best_eval_cer"] is not None else ""
-            print(f"  Fold {r['fold']}: loss={r['best_eval_loss']:.4f}{cer_str}{stop_tag}")
+            score_str = f" | score={r['best_eval_score']:.4f}" if r.get("best_eval_score") is not None else ""
+            cer_wer = ""
+            if r.get("best_eval_cer") is not None and r.get("best_eval_wer") is not None:
+                cer_wer = f" (cer={r['best_eval_cer']:.4f}, wer={r['best_eval_wer']:.4f})"
+            print(f"  Fold {r['fold']}: loss={r['best_eval_loss']:.4f}{score_str}{cer_wer}{stop_tag}")
 
         losses = [r["best_eval_loss"] for r in results]
-        cers = [r["best_eval_cer"] for r in results if r["best_eval_cer"] is not None]
+        scores = [r["best_eval_score"] for r in results if r.get("best_eval_score") is not None]
+        cers = [r["best_eval_cer"] for r in results if r.get("best_eval_cer") is not None]
+        wers = [r["best_eval_wer"] for r in results if r.get("best_eval_wer") is not None]
 
         print(f"\nAverage: loss={np.mean(losses):.4f}±{np.std(losses):.4f}", end="")
-        if cers:
-            print(f" | cer={np.mean(cers):.4f}±{np.std(cers):.4f}")
+        if scores:
+            print(f" | score={np.mean(scores):.4f}±{np.std(scores):.4f}", end="")
+        if cers and wers:
+            print(f" (cer={np.mean(cers):.4f}, wer={np.mean(wers):.4f})")
         else:
             print()
 

@@ -58,9 +58,9 @@ training:
   save_steps: 100
   save_total_limit: 3
 
-  # Compute CER for monitoring
-  compute_cer: true
-  metric_for_best_model: "eval_cer"
+  # Compute CER+WER for monitoring (competition metric)
+  compute_cer: true  # Also computes WER and competition score (0.5*WER + 0.5*CER)
+  metric_for_best_model: "eval_score"  # Use competition metric (not just CER)
 
   num_workers: 8
   resume_from_checkpoint: true
