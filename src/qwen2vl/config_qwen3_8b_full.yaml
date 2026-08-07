@@ -36,10 +36,11 @@ training:
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  # LoRA config - conservative for long training
+  # LoRA config - rsLoRA for stable scaling across ranks
   lora_r: 64  # Keep at 64 (v2's 96 led to overfitting)
   lora_alpha: 128
   lora_dropout: 0.18  # Increased from 0.15 for stronger regularization
+  use_rslora: true  # Rank-Stabilized LoRA (scaling = alpha/sqrt(r) instead of alpha/r)
   lora_target_modules:
     - "q_proj"
     - "k_proj"

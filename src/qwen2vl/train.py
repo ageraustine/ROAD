@@ -815,6 +815,7 @@ def setup_model(cfg: dict):
         target_modules=train_cfg["lora_target_modules"],
         modules_to_save=train_cfg.get("lora_modules_to_save"),
         lora_dropout=train_cfg["lora_dropout"],
+        use_rslora=train_cfg.get("use_rslora", False),  # Rank-Stabilized LoRA
         bias="none",
         task_type="CAUSAL_LM",
     )
