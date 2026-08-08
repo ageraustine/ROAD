@@ -8,7 +8,7 @@ model:
   torch_dtype: "bfloat16"
 
 data:
-  train_csv: "dataset/Train.csv"
+  train_csv: "dataset/Train.csv"  # Using original (keeping duplicates unless leakage detected)
   test_csv: "dataset/Test.csv"
   image_dir: "dataset/images"
 

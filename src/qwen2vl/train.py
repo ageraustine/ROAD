@@ -1187,7 +1187,30 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
     """Yield (train_df, val_df, fold_num). Stratified by semantic text properties from ground truth. Grouped by group_col when present."""
     df = df.copy()
 
-    # Compute semantic text-based features (fast, interpretable, ground-truth based)
+    # STEP 1: Identify duplicate texts to prevent train/val leakage
+    print("Checking for duplicate texts...")
+    df["_text_clean"] = df["Target"].astype(str).str.lower().str.strip()
+
+    # Find duplicate texts and assign group IDs
+    text_counts = df["_text_clean"].value_counts()
+    duplicate_texts = text_counts[text_counts > 1]
+
+    if len(duplicate_texts) > 0:
+        print(f"  Found {len(duplicate_texts)} unique texts with duplicates ({duplicate_texts.sum()} total samples)")
+        print(f"  Assigning duplicate group IDs to keep copies together in same split...")
+
+        # Assign a unique group ID to each duplicate text
+        df["_dup_group"] = -1  # -1 = not a duplicate
+        for group_id, dup_text in enumerate(duplicate_texts.index):
+            df.loc[df["_text_clean"] == dup_text, "_dup_group"] = group_id
+
+        n_grouped = (df["_dup_group"] >= 0).sum()
+        print(f"  Grouped {n_grouped} duplicate samples into {len(duplicate_texts)} groups")
+    else:
+        print("  No duplicate texts found")
+        df["_dup_group"] = -1
+
+    # STEP 2: Compute semantic text-based features (fast, interpretable, ground-truth based)
     print("Computing semantic text features (digits, uppercase, lexical diversity, special chars, word length)...")
     df["_digit_density"] = df["Target"].apply(compute_digit_density)
     df["_uppercase_ratio"] = df["Target"].apply(compute_uppercase_ratio)
@@ -1222,8 +1245,12 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
     k_folds = data_cfg.get("k_folds", 1)
     seed = data_cfg.get("seed", 42)
     group_col = data_cfg.get("group_col")
-    helper = ["_digit_density", "_uppercase_ratio", "_lexical_diversity", "_special_char_density",
-              "_avg_word_length", "_digit_bin", "_upper_bin", "_lex_bin", "_bin"]
+
+    # Store original index for duplicate-aware splitting
+    df["_orig_idx"] = df.index
+
+    helper = ["_text_clean", "_dup_group", "_orig_idx", "_digit_density", "_uppercase_ratio", "_lexical_diversity",
+              "_special_char_density", "_avg_word_length", "_digit_bin", "_upper_bin", "_lex_bin", "_bin"]
 
     if group_col and group_col not in df.columns:
         raise ValueError(f"group_col '{group_col}' not in the CSV columns")
@@ -1247,9 +1274,65 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
                    df.iloc[va].drop(columns=helper).copy(),
                    fold_num)
     else:
-        train_df, val_df = train_test_split(
-            df, test_size=data_cfg["val_split"], stratify=df["_bin"], random_state=seed
-        )
+        # STEP 3: Split with duplicate awareness
+        has_duplicates = (df["_dup_group"] >= 0).any()
+
+        if has_duplicates:
+            print("Splitting with duplicate-group awareness (keeps duplicate texts together)...")
+
+            # Strategy: For each duplicate group, assign all members to train or val together
+            # 1. Get one representative per duplicate group
+            # 2. Combine with unique samples
+            # 3. Split representatives + unique samples with stratification
+            # 4. Propagate split assignment to all group members
+
+            # Separate duplicates from unique samples
+            dup_mask = df["_dup_group"] >= 0
+            dup_df = df[dup_mask].copy()
+            unique_df = df[~dup_mask].copy()
+
+            # Get one representative per duplicate group (use first occurrence)
+            # Keep _orig_idx so we can map back
+            dup_representatives = dup_df.groupby("_dup_group", as_index=False).first()
+
+            # Combine representatives with unique samples for stratified splitting
+            split_df = pd.concat([unique_df, dup_representatives], ignore_index=True)
+
+            # Split representatives + unique samples with stratification
+            split_train, split_val = train_test_split(
+                split_df, test_size=data_cfg["val_split"], stratify=split_df["_bin"], random_state=seed
+            )
+
+            # Now propagate: which duplicate groups went to train vs val?
+            train_dup_groups = set(split_train[split_train["_dup_group"] >= 0]["_dup_group"])
+            val_dup_groups = set(split_val[split_val["_dup_group"] >= 0]["_dup_group"])
+
+            # Build train/val by:
+            # - Unique samples from split_train/split_val directly
+            # - All members of duplicate groups assigned to train/val
+            train_mask = (df["_dup_group"] == -1) & (df["_orig_idx"].isin(split_train["_orig_idx"]))
+            train_mask = train_mask | (df["_dup_group"].isin(train_dup_groups))
+
+            val_mask = (df["_dup_group"] == -1) & (df["_orig_idx"].isin(split_val["_orig_idx"]))
+            val_mask = val_mask | (df["_dup_group"].isin(val_dup_groups))
+
+            train_df = df[train_mask].copy()
+            val_df = df[val_mask].copy()
+
+            # Verify no leakage
+            train_texts = set(train_df["_text_clean"])
+            val_texts = set(val_df["_text_clean"])
+            leaked = train_texts & val_texts
+            if leaked:
+                print(f"  ⚠️  WARNING: {len(leaked)} texts still leaked (should be 0)!")
+            else:
+                print(f"  ✓ No duplicate text leakage - all copies kept together")
+
+        else:
+            # No duplicates: standard stratified split
+            train_df, val_df = train_test_split(
+                df, test_size=data_cfg["val_split"], stratify=df["_bin"], random_state=seed
+            )
 
         # Log distributions to verify stratification is working
         train_digits = train_df["_digit_density"]
