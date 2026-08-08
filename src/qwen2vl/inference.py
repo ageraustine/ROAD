@@ -76,8 +76,71 @@ def load_image(path: str, max_pixels: int = 2016000) -> Image.Image:
     return img
 
 
+def remove_repetitions(text: str, max_repetitions: int = 5) -> str:
+    """
+    Detect and truncate excessive repetitive patterns in generated text.
+
+    Catches patterns like:
+    - "* * * * * * * * * * * *..." (word repetition)
+    - "- - - - - - - - - - - -..." (token repetition)
+    - "the the the the the..." (phrase repetition)
+
+    Args:
+        text: Generated text that may contain repetitions
+        max_repetitions: Maximum allowed consecutive repetitions before truncating
+
+    Returns:
+        Text truncated at first excessive repetition point
+    """
+    if not text or len(text) < 10:
+        return text
+
+    tokens = text.split()
+    if len(tokens) < max_repetitions:
+        return text
+
+    # Check for consecutive word repetitions
+    for i in range(len(tokens) - max_repetitions):
+        word = tokens[i]
+        # Count consecutive occurrences
+        consecutive = 1
+        for j in range(i + 1, len(tokens)):
+            if tokens[j] == word:
+                consecutive += 1
+            else:
+                break
+
+        # If we find excessive repetitions, truncate
+        if consecutive > max_repetitions:
+            # Keep text up to (but not including) the repetition
+            truncated = " ".join(tokens[:i])
+            return truncated.strip()
+
+    # Check for phrase repetitions (2-3 word sequences)
+    for phrase_len in [2, 3]:
+        for i in range(len(tokens) - (phrase_len * max_repetitions)):
+            phrase = tuple(tokens[i:i + phrase_len])
+            consecutive = 1
+
+            # Count consecutive phrase occurrences
+            pos = i + phrase_len
+            while pos + phrase_len <= len(tokens):
+                if tuple(tokens[pos:pos + phrase_len]) == phrase:
+                    consecutive += 1
+                    pos += phrase_len
+                else:
+                    break
+
+            # Truncate if excessive
+            if consecutive > max_repetitions:
+                truncated = " ".join(tokens[:i])
+                return truncated.strip()
+
+    return text
+
+
 def clean_output(text: str) -> str:
-    """Clean model output, removing any chat artifacts."""
+    """Clean model output, removing any chat artifacts and excessive repetitions."""
     text = str(text)
 
     # Remove common chat template artifacts
@@ -85,6 +148,9 @@ def clean_output(text: str) -> str:
     for artifact in artifacts:
         if artifact in text:
             text = text.split(artifact)[-1]
+
+    # Remove excessive repetitive patterns (defensive layer)
+    text = remove_repetitions(text, max_repetitions=5)
 
     return " ".join(text.split()).strip()
 
