@@ -510,13 +510,14 @@ class CERCallback(TrainerCallback):
 
     def __init__(self, processor, dataset, max_pixels: int, n_samples: int = 200,
                  max_new_tokens: int = 256, batch_size: int = 4, seed: int = 42,
-                 is_kfold: bool = False, verbose: bool = False):
+                 is_kfold: bool = False, verbose: bool = False, repetition_penalty: float = 1.0):
         self.processor = processor
         self.max_pixels = max_pixels
         self.max_new_tokens = max_new_tokens
         self.batch_size = batch_size
         self.is_kfold = is_kfold
         self.verbose = verbose
+        self.repetition_penalty = repetition_penalty
 
         n = min(n_samples, len(dataset))
         idx = np.random.RandomState(seed).choice(len(dataset), n, replace=False)
@@ -566,6 +567,7 @@ class CERCallback(TrainerCallback):
                     max_new_tokens=self.max_new_tokens,
                     do_sample=False,
                     num_beams=1,  # greedy: this is a monitoring signal, not the submission
+                    repetition_penalty=self.repetition_penalty,
                 )
                 trimmed = out[:, inputs["input_ids"].shape[1]:]
                 decoded = self.processor.batch_decode(trimmed, skip_special_tokens=True)
@@ -961,6 +963,7 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
             seed=data_cfg.get("seed", 42),
             is_kfold=is_kfold,
             verbose=False,  # Only print improvements
+            repetition_penalty=cfg.get("inference", {}).get("repetition_penalty", 1.0),
         ))
     elif metric == "eval_cer":
         raise ValueError("metric_for_best_model='eval_cer' requires compute_cer: true")
