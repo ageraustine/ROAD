@@ -14,20 +14,20 @@ data:
 
   # NO K-FOLD - use simple train/val split
   k_folds: 1  # Disables K-fold
-  val_split: 0.1  # 90% train (3,688), 10% val (410)
+  val_split: 0.15  # 85% train (3,483), 15% val (615) - larger for more stable metrics
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s2"  # Anti-overfitting version
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s3"  # Early stopping version
 
   batch_size: 2
   eval_batch_size: 2
   gradient_accumulation_steps: 8  # effective batch = 16
 
-  # Maximum single model performance - aiming for 0.87-0.89
-  epochs: 8  # Extended training with very low LR
-  learning_rate: 0.00006  # 6e-5 (very low for careful, long training)
-  warmup_ratio: 0.18  # Longer warmup for stability
+  # Optimal stopping: 3-4 epochs (like Run 1 success)
+  epochs: 4  # Stop before severe overfitting (Run 2 overfit after epoch 3)
+  learning_rate: 0.00008  # 8e-5 (balanced - not too fast, not too slow)
+  warmup_ratio: 0.15
   lr_scheduler: "cosine"
 
   # Stronger regularization to prevent overfitting with higher vision rank
@@ -74,30 +74,24 @@ training:
   num_workers: 8
   resume_from_checkpoint: true
 
-  # Early stopping - use competition metric, stop at peak
+  # Early stopping - use eval_loss (more reliable signal for generalization)
   early_stopping:
     enabled: true
-    metric: "eval_score"  # Use actual competition metric (not loss)
-    patience: 6  # Stop after 6 evals (600 steps) without improvement (longer for 8 epochs)
-    min_delta: 0.0005  # Smaller delta for fine improvements
+    metric: "eval_loss"  # Use loss (stable signal for when model stops generalizing)
+    patience: 3  # Stop quickly after loss starts rising (overfitting signal)
+    min_delta: 0.001
 
 augmentation:
-  enabled: true
-  # SAFE augmentations only (documents already degraded)
-  # Increased probabilities to add more variation (fights overfitting)
-  p_blur: 0.0  # Disabled (documents already degraded)
-  p_noise: 0.0  # Disabled (documents already have grain)
-  p_brightness: 0.45  # Increased from 0.35 (more exposure variation)
-  p_contrast: 0.45    # Increased from 0.35 (more ink fade variation)
-  p_rotate: 0.20      # Increased from 0.15 (more scan skew variation)
-  max_rotation: 2.0   # Increased from 1.5 (slightly more range)
-
-  # Advanced HTR augmentations - DISABLED (risky on degraded docs)
-  p_morphology: 0.0  # DISABLED - can destroy strokes on faded ink
-  p_shear: 0.0       # DISABLED - distorts characters on degraded text
-  max_shear: 8
-  p_resolution: 0.0  # DISABLED - adds blur to already blurry scans
-  p_jpeg: 0.0        # DISABLED - adds artifacts to already artifacted scans
+  enabled: false  # DISABLED - Testing if augmentation hurts performance on degraded docs
+  # Documents are already degraded (faded ink, aged paper, natural variation)
+  # Augmentation may cross readability threshold and make training distribution
+  # harder than test distribution
+  p_blur: 0.0
+  p_noise: 0.0
+  p_brightness: 0.0
+  p_contrast: 0.0
+  p_rotate: 0.0
+  max_rotation: 0.0
 
 inference:
   checkpoint: "outputs/qwen3-8b-full/best"

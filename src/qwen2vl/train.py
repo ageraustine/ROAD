@@ -27,7 +27,7 @@ import yaml
 import torch
 import pandas as pd
 import numpy as np
-import cv2
+import cv2  # Used in augmentation code (even if currently disabled)
 from io import BytesIO
 from PIL import Image, ImageFilter, ImageEnhance
 from sklearn.model_selection import train_test_split, StratifiedKFold
@@ -1080,49 +1080,150 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
     return result
 
 
-def compute_image_difficulty(image_path: str) -> float:
+def compute_special_char_density(text: str) -> float:
     """
-    Compute difficulty proxy: image variance (std dev).
-    Low variance = faded/degraded = harder to read.
-    High variance = clear contrast = easier to read.
+    Compute special character density as stratification proxy.
+
+    Special characters indicate:
+    - Document type (legal docs with £, dates, formal punctuation)
+    - Scribe style (abbreviations, dashes)
+    - Transcription complexity
+
+    Returns: ratio of special chars to total chars (0.0 to 1.0)
     """
-    img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        return 0.0  # Fallback for missing images
-    return float(img.std())
+    if not text or pd.isna(text):
+        return 0.0
+
+    text = str(text)
+    # Count non-alphanumeric, non-space characters
+    special_chars = sum(1 for c in text if not c.isalnum() and not c.isspace())
+    return special_chars / max(len(text), 1)
+
+
+def compute_digit_density(text: str) -> float:
+    """
+    Compute digit/number density as stratification proxy.
+
+    Digits indicate:
+    - Dates (1842, 15th)
+    - Monetary amounts (£25-10-6)
+    - Measurements (3 acres)
+    - Different OCR challenge (digits often harder than letters)
+
+    Returns: ratio of digits to total chars (0.0 to 1.0)
+    """
+    if not text or pd.isna(text):
+        return 0.0
+
+    text = str(text)
+    digits = sum(1 for c in text if c.isdigit())
+    return digits / max(len(text), 1)
+
+
+def compute_uppercase_ratio(text: str) -> float:
+    """
+    Compute uppercase letter ratio as formality/emphasis indicator.
+
+    Uppercase indicates:
+    - Proper nouns (John Smith, London)
+    - Formal language (WITNESSED, SEALED)
+    - Emphasis and titles (Mr., Esq.)
+    - Different capitalization patterns across document types
+
+    Returns: ratio of uppercase letters to total letters (0.0 to 1.0)
+    """
+    if not text or pd.isna(text):
+        return 0.0
+
+    text = str(text)
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    uppercase = sum(1 for c in letters if c.isupper())
+    return uppercase / len(letters)
+
+
+def compute_lexical_diversity(text: str) -> float:
+    """
+    Compute lexical diversity (unique word ratio) as vocabulary complexity indicator.
+
+    Lexical diversity indicates:
+    - Repetitive/formulaic language (low diversity): "the said party... the said party"
+    - Rich vocabulary (high diversity): "signed, sealed, witnessed, delivered, dated"
+    - Document type (legal templates vs descriptive narratives)
+
+    Returns: ratio of unique words to total words (0.0 to 1.0)
+    """
+    if not text or pd.isna(text):
+        return 0.0
+
+    words = str(text).lower().split()
+    if not words:
+        return 0.0
+    return len(set(words)) / len(words)
+
+
+def compute_avg_word_length(text: str) -> float:
+    """
+    Compute average word length as vocabulary complexity indicator.
+
+    Word length indicates:
+    - Simple vocabulary (short words): "I see the man go"
+    - Complex vocabulary (long words): "aforementioned beneficiary witnessed"
+    - Different OCR challenge (longer words = more opportunities for errors)
+
+    Returns: average characters per word
+    """
+    if not text or pd.isna(text):
+        return 0.0
+
+    words = [w for w in str(text).split() if w]
+    if not words:
+        return 0.0
+    return sum(len(w) for w in words) / len(words)
 
 
 def make_splits(df: pd.DataFrame, data_cfg: dict):
-    """Yield (train_df, val_df, fold_num). Stratified by text length + image difficulty. Grouped by group_col when present."""
+    """Yield (train_df, val_df, fold_num). Stratified by semantic text properties from ground truth. Grouped by group_col when present."""
     df = df.copy()
-    image_dir = REPO_ROOT / data_cfg["image_dir"]
 
-    # Compute text length
-    df["_len"] = df["Target"].astype(str).str.len()
+    # Compute semantic text-based features (fast, interpretable, ground-truth based)
+    print("Computing semantic text features (digits, uppercase, lexical diversity, special chars, word length)...")
+    df["_digit_density"] = df["Target"].apply(compute_digit_density)
+    df["_uppercase_ratio"] = df["Target"].apply(compute_uppercase_ratio)
+    df["_lexical_diversity"] = df["Target"].apply(compute_lexical_diversity)
+    df["_special_char_density"] = df["Target"].apply(compute_special_char_density)
+    df["_avg_word_length"] = df["Target"].apply(compute_avg_word_length)
 
-    # Compute image difficulty (variance/std - low = degraded/hard, high = clear/easy)
-    print("Computing image difficulty scores (variance)...")
-    df["_difficulty"] = df["ID"].apply(lambda id: compute_image_difficulty(image_dir / f"{id}.jpg"))
-
-    # Stratify by text length (3 bins)
+    # Stratify by digit density (2 bins: has_numbers vs minimal_numbers)
     try:
-        df["_len_bin"] = pd.qcut(df["_len"], q=3, labels=["short", "medium", "long"], duplicates="drop")
+        df["_digit_bin"] = pd.qcut(df["_digit_density"], q=2, labels=["no_nums", "has_nums"], duplicates="drop")
     except ValueError:
-        df["_len_bin"] = "medium"  # Fallback if not enough unique values
+        df["_digit_bin"] = "has_nums"
 
-    # Stratify by difficulty (3 bins)
+    # Stratify by uppercase ratio (2 bins: informal vs formal)
     try:
-        df["_diff_bin"] = pd.qcut(df["_difficulty"], q=3, labels=["hard", "medium", "easy"], duplicates="drop")
+        df["_upper_bin"] = pd.qcut(df["_uppercase_ratio"], q=2, labels=["informal", "formal"], duplicates="drop")
     except ValueError:
-        df["_diff_bin"] = "medium"  # Fallback if not enough unique values
+        df["_upper_bin"] = "informal"
 
-    # Combine length + difficulty for multi-factor stratification
-    df["_bin"] = df["_len_bin"].astype(str) + "_" + df["_diff_bin"].astype(str)
+    # Stratify by lexical diversity (3 bins: repetitive/moderate/diverse vocabulary)
+    try:
+        df["_lex_bin"] = pd.qcut(df["_lexical_diversity"], q=3, labels=["repetitive", "moderate", "diverse"], duplicates="drop")
+    except ValueError:
+        df["_lex_bin"] = "moderate"
+
+    # Combine: digits (2) × uppercase (2) × lexical_diversity (3) = 12 bins
+    # Captures: numeric content, formality, vocabulary complexity
+    df["_bin"] = (df["_digit_bin"].astype(str) + "_" +
+                  df["_upper_bin"].astype(str) + "_" +
+                  df["_lex_bin"].astype(str))
 
     k_folds = data_cfg.get("k_folds", 1)
     seed = data_cfg.get("seed", 42)
     group_col = data_cfg.get("group_col")
-    helper = ["_len", "_difficulty", "_len_bin", "_diff_bin", "_bin"]
+    helper = ["_digit_density", "_uppercase_ratio", "_lexical_diversity", "_special_char_density",
+              "_avg_word_length", "_digit_bin", "_upper_bin", "_lex_bin", "_bin"]
 
     if group_col and group_col not in df.columns:
         raise ValueError(f"group_col '{group_col}' not in the CSV columns")
@@ -1132,11 +1233,11 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
             if not GROUP_KFOLD_AVAILABLE:
                 raise RuntimeError("group_col needs scikit-learn >= 1.0 for StratifiedGroupKFold")
             print(f"Grouped 5-fold on '{group_col}' ({df[group_col].nunique()} groups), "
-                  f"stratified by length + difficulty - prevents writer/page leakage")
+                  f"stratified by semantic features (digits/uppercase/lexical) - prevents writer/page leakage")
             splitter = StratifiedGroupKFold(n_splits=k_folds, shuffle=True, random_state=seed)
             split_iter = splitter.split(df, df["_bin"], groups=df[group_col])
         else:
-            print("Stratified 5-fold by text length + image difficulty (3×3 bins). "
+            print("Stratified 5-fold by semantic features: digits (2) × uppercase (2) × lexical_diversity (3) = 12 bins. "
                   "NOTE: if rows share a source page or scribe, set data.group_col to avoid leakage.")
             splitter = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=seed)
             split_iter = splitter.split(df, df["_bin"])
@@ -1150,19 +1251,31 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
             df, test_size=data_cfg["val_split"], stratify=df["_bin"], random_state=seed
         )
 
-        # Log length and difficulty distributions to verify stratification is working
-        train_lens = train_df["_len"]
-        val_lens = val_df["_len"]
-        train_diff = train_df["_difficulty"]
-        val_diff = val_df["_difficulty"]
+        # Log distributions to verify stratification is working
+        train_digits = train_df["_digit_density"]
+        val_digits = val_df["_digit_density"]
+        train_upper = train_df["_uppercase_ratio"]
+        val_upper = val_df["_uppercase_ratio"]
+        train_lex = train_df["_lexical_diversity"]
+        val_lex = val_df["_lexical_diversity"]
+        train_spec = train_df["_special_char_density"]
+        val_spec = val_df["_special_char_density"]
+        train_wlen = train_df["_avg_word_length"]
+        val_wlen = val_df["_avg_word_length"]
 
-        print(f"Stratified split by text length + image difficulty (3×3 bins):")
+        print(f"Stratified split by semantic features: digits (2) × uppercase (2) × lexical_diversity (3) = 12 bins:")
         print(f"  Train: {len(train_df)} samples")
-        print(f"    Length: min={train_lens.min()}, median={train_lens.median():.0f}, max={train_lens.max()}")
-        print(f"    Difficulty (variance): min={train_diff.min():.1f}, median={train_diff.median():.1f}, max={train_diff.max():.1f}")
+        print(f"    Digit density: min={train_digits.min():.3f}, median={train_digits.median():.3f}, max={train_digits.max():.3f}")
+        print(f"    Uppercase ratio: min={train_upper.min():.3f}, median={train_upper.median():.3f}, max={train_upper.max():.3f}")
+        print(f"    Lexical diversity: min={train_lex.min():.3f}, median={train_lex.median():.3f}, max={train_lex.max():.3f}")
+        print(f"    Special chars: min={train_spec.min():.3f}, median={train_spec.median():.3f}, max={train_spec.max():.3f}")
+        print(f"    Avg word length: min={train_wlen.min():.1f}, median={train_wlen.median():.1f}, max={train_wlen.max():.1f}")
         print(f"  Val:   {len(val_df)} samples")
-        print(f"    Length: min={val_lens.min()}, median={val_lens.median():.0f}, max={val_lens.max()}")
-        print(f"    Difficulty (variance): min={val_diff.min():.1f}, median={val_diff.median():.1f}, max={val_diff.max():.1f}")
+        print(f"    Digit density: min={val_digits.min():.3f}, median={val_digits.median():.3f}, max={val_digits.max():.3f}")
+        print(f"    Uppercase ratio: min={val_upper.min():.3f}, median={val_upper.median():.3f}, max={val_upper.max():.3f}")
+        print(f"    Lexical diversity: min={val_lex.min():.3f}, median={val_lex.median():.3f}, max={val_lex.max():.3f}")
+        print(f"    Special chars: min={val_spec.min():.3f}, median={val_spec.median():.3f}, max={val_spec.max():.3f}")
+        print(f"    Avg word length: min={val_wlen.min():.1f}, median={val_wlen.median():.1f}, max={val_wlen.max():.1f}")
 
         yield train_df.drop(columns=helper), val_df.drop(columns=helper), None
 
