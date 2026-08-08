@@ -98,4 +98,5 @@ inference:
   output_csv: "submission_full.csv"
   max_new_tokens: 150  # reduced from 256 to prevent hallucination
   num_beams: 5
+  repetition_penalty: 1.2  # Prevent infinite loops like "* * * * * * * *..." or "- - - - - -..."
   batch_size: 8

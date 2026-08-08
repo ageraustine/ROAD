@@ -162,6 +162,7 @@ def predict_single(
     image: Image.Image,
     max_new_tokens: int = 256,
     num_beams: int = 5,
+    repetition_penalty: float = 1.0,
 ) -> str:
     """Generate transcription for a single image."""
 
@@ -191,6 +192,7 @@ def predict_single(
             max_new_tokens=max_new_tokens,
             num_beams=num_beams,
             do_sample=False,
+            repetition_penalty=repetition_penalty,
         )
 
     # Trim input prompt from generated output (Qwen3 style)
@@ -214,6 +216,7 @@ def predict_batch(
     images: list[Image.Image],
     max_new_tokens: int = 256,
     num_beams: int = 5,
+    repetition_penalty: float = 1.0,
 ) -> list[str]:
     """
     Generate transcriptions for a batch of images.
@@ -224,6 +227,7 @@ def predict_batch(
         images: List of PIL images to process
         max_new_tokens: Maximum tokens to generate
         num_beams: Number of beams for beam search
+        repetition_penalty: Penalty for token repetition (>1.0 = less repetition)
 
     Returns:
         List of transcription strings (same order as input images)
@@ -270,6 +274,7 @@ def predict_batch(
             max_new_tokens=max_new_tokens,
             num_beams=num_beams,
             do_sample=False,
+            repetition_penalty=repetition_penalty,
         )
 
     # Trim input prompt from generated output
@@ -476,6 +481,7 @@ def run_kfold_inference(cfg: dict, clear_cache: bool = False, ensemble_strategy:
                     batch_images,
                     max_new_tokens=inf_cfg["max_new_tokens"],
                     num_beams=inf_cfg["num_beams"],
+                    repetition_penalty=inf_cfg.get("repetition_penalty", 1.0),
                 )
                 for bid, pred in zip(batch_ids, preds):
                     fold_predictions[bid] = pred
@@ -491,6 +497,7 @@ def run_kfold_inference(cfg: dict, clear_cache: bool = False, ensemble_strategy:
                 batch_images,
                 max_new_tokens=inf_cfg["max_new_tokens"],
                 num_beams=inf_cfg["num_beams"],
+                repetition_penalty=inf_cfg.get("repetition_penalty", 1.0),
             )
             for bid, pred in zip(batch_ids, preds):
                 fold_predictions[bid] = pred
@@ -587,6 +594,7 @@ def run_inference(cfg: dict, checkpoint_override: str = None):
                 batch_images,
                 max_new_tokens=inf_cfg["max_new_tokens"],
                 num_beams=inf_cfg["num_beams"],
+                repetition_penalty=inf_cfg.get("repetition_penalty", 1.0),
             )
             for bid, pred in zip(batch_ids, preds):
                 results.append({"ID": bid, "Target": pred})
@@ -602,6 +610,7 @@ def run_inference(cfg: dict, checkpoint_override: str = None):
             batch_images,
             max_new_tokens=inf_cfg["max_new_tokens"],
             num_beams=inf_cfg["num_beams"],
+            repetition_penalty=inf_cfg.get("repetition_penalty", 1.0),
         )
         for bid, pred in zip(batch_ids, preds):
             results.append({"ID": bid, "Target": pred})
