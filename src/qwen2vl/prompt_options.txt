@@ -1,0 +1,17 @@
+OCR PROMPT OPTIONS FOR HISTORICAL DOCUMENTS
+
+CURRENT (achieving 0.90):
+"Transcribe the handwritten text in this image exactly as written. Preserve spelling, punctuation, and line breaks. Output only the transcription."
+
+OPTION A - More explicit about historical content:
+"Transcribe this historical handwritten document exactly as written, including original spelling, abbreviations, and punctuation. Do not modernize or correct the text. Output only the transcription."
+
+OPTION B - Emphasis on fidelity:
+"Transcribe the handwritten text exactly as it appears, preserving all original spelling variations, abbreviations (like s^d, y^e), capitalization, and punctuation. Output only the transcription."
+
+OPTION C - Shortest (less is more):
+"Transcribe the handwritten text exactly as written, preserving all original spelling and punctuation."
+
+RECOMMENDATION:
+Current prompt is working well (0.90 score). Only change if you hit a plateau.
+If changing, try OPTION C first (simpler often better for VLMs).

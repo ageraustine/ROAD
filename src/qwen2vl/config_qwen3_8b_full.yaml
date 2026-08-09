@@ -18,41 +18,41 @@ data:
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s6"  # Early stopping version
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s7"  # Early stopping version
 
   batch_size: 2
   eval_batch_size: 2
   gradient_accumulation_steps: 8  # effective batch = 16
 
-  # Optimal stopping: 3-4 epochs (like Run 1 success)
-  epochs: 4  # Stop before severe overfitting (Run 2 overfit after epoch 3)
-  learning_rate: 0.00005  # 5e-5 (lower for better generalization, less overfitting)
+  # Extended training with conservative LR
+  epochs: 4
+  learning_rate: 0.00003  # 3e-5 (very conservative - better generalization, safer for longer training)
   warmup_ratio: 0.15
   lr_scheduler: "cosine"
 
-  # Regularization balanced for vision r=32
-  weight_decay: 0.02  # Lighter regularization for lower rank (r=32 has fewer params)
+  # Regularization balanced for vision r=64 (sweet spot - achieved 0.90)
+  weight_decay: 0.03  # Balanced regularization for r=64
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  # LoRA config - Asymmetric ranks (Vision r=32, LLM r=16)
-  # Testing if lower vision rank improves generalization on small dataset
+  # LoRA config - Asymmetric ranks (Vision r=64, LLM r=16)
+  # Vision tower needs capacity for new script; LLM just needs task adaptation
   lora_r: 16  # Base rank for LLM
   lora_alpha: 32
   lora_dropout: 0.1  # Strong dropout for regularization
   use_rslora: true  # Rank-Stabilized LoRA
 
-  # Rank asymmetry - Vision r=32, LLM r=16 (~40M params, lower capacity)
+  # Rank asymmetry - Vision r=64, LLM r=16 (~80M params, optimal capacity)
   rank_pattern:
-    qkv: 32         # Vision attention (critical for stroke patterns)
-    proj: 32        # Vision output projection
-    linear_fc1: 32  # Vision MLP layer 1 (learns visual features)
-    linear_fc2: 32  # Vision MLP layer 2 (learns visual features)
+    qkv: 64         # Vision attention (critical for stroke patterns)
+    proj: 64        # Vision output projection
+    linear_fc1: 64  # Vision MLP layer 1 (learns visual features)
+    linear_fc2: 64  # Vision MLP layer 2 (learns visual features)
   alpha_pattern:
-    qkv: 64         # Scale alpha proportionally (2*rank)
-    proj: 64
-    linear_fc1: 64
-    linear_fc2: 64
+    qkv: 128        # Scale alpha proportionally (2*rank)
+    proj: 128
+    linear_fc1: 128
+    linear_fc2: 128
 
   # Target modules - Covers vision tower + DeepStack mergers + LLM
   # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
@@ -74,23 +74,19 @@ training:
   num_workers: 8
   resume_from_checkpoint: true
 
-  # Early stopping - use eval_loss (more reliable signal for generalization)
+  # Early stopping - DISABLED for full training
   early_stopping:
-    enabled: true
-    metric: "eval_loss"  # Use loss (stable signal for when model stops generalizing)
-    patience: 3  # Stop quickly after loss starts rising (overfitting signal)
-    min_delta: 0.001
+    enabled: false  # Train full 4 epochs with LR 3e-5 (safe, won't overfit)
 
 augmentation:
-  enabled: true  # Conservative augmentation - only contrast (safest for degraded docs)
-  # Documents already degraded, so only simulate ink darkness variations
-  # Contrast helps model generalize to varying ink preservation states
+  enabled: true  # Enhanced augmentation - contrast + rotation
+  # Simulate realistic document variations for better generalization
   p_blur: 0.0          # DISABLED - docs already blurry
   p_noise: 0.0         # DISABLED - docs already have grain
   p_brightness: 0.0    # DISABLED - docs already faded
-  p_contrast: 0.20     # ENABLED - simulates ink darkness variation (20% of images)
-  p_rotate: 0.0        # DISABLED - keeping minimal for safety
-  max_rotation: 0.0
+  p_contrast: 0.30     # INCREASED - ink darkness variation (30% of images)
+  p_rotate: 0.10       # ENABLED - scanning alignment variation (10% of images)
+  max_rotation: 0.5    # ±0.5 degrees (very mild, won't hurt readability)
 
 inference:
   checkpoint: "outputs/qwen3-8b-full/best"
