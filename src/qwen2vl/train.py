@@ -1259,22 +1259,59 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
         raise ValueError(f"group_col '{group_col}' not in the CSV columns")
 
     if k_folds > 1:
-        if group_col:
+        # K-fold with duplicate awareness
+        has_duplicates = (df["_dup_group"] >= 0).any()
+
+        if has_duplicates or group_col:
+            # Use StratifiedGroupKFold to keep duplicates together
             if not GROUP_KFOLD_AVAILABLE:
-                raise RuntimeError("group_col needs scikit-learn >= 1.0 for StratifiedGroupKFold")
-            print(f"Grouped 5-fold on '{group_col}' ({df[group_col].nunique()} groups), "
-                  f"stratified by semantic features (digits/uppercase/lexical) - prevents writer/page leakage")
+                raise RuntimeError("K-fold with duplicates needs scikit-learn >= 1.0 for StratifiedGroupKFold")
+
+            # Create synthetic group column combining duplicates + user group_col
+            if has_duplicates and group_col:
+                # Combine both: duplicate group + user-specified group
+                df["_fold_group"] = df["_dup_group"].astype(str) + "_" + df[group_col].astype(str)
+                print(f"K-fold with duplicate awareness + grouped on '{group_col}'")
+            elif has_duplicates:
+                # Use duplicate group as fold group
+                # Assign unique group ID to non-duplicates
+                max_dup_group = df["_dup_group"].max()
+                df["_fold_group"] = df.apply(
+                    lambda row: row["_dup_group"] if row["_dup_group"] >= 0 else max_dup_group + 1 + row.name,
+                    axis=1
+                )
+                print(f"K-fold with duplicate awareness (keeps {(df['_dup_group'] >= 0).sum()} duplicate samples together)")
+            else:
+                # Only user-specified group
+                df["_fold_group"] = df[group_col]
+                print(f"K-fold grouped on '{group_col}' ({df[group_col].nunique()} groups)")
+
+            helper.append("_fold_group")
+
             splitter = StratifiedGroupKFold(n_splits=k_folds, shuffle=True, random_state=seed)
-            split_iter = splitter.split(df, df["_bin"], groups=df[group_col])
+            split_iter = splitter.split(df, df["_bin"], groups=df["_fold_group"])
         else:
-            print("Stratified 5-fold by semantic features: digits (2) × uppercase (2) × lexical_diversity (3) = 12 bins. "
-                  "NOTE: if rows share a source page or scribe, set data.group_col to avoid leakage.")
+            # Standard k-fold (no duplicates, no grouping)
+            print(f"Stratified {k_folds}-fold by semantic features: digits (2) × uppercase (2) × lexical_diversity (3) = 12 bins.")
             splitter = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=seed)
             split_iter = splitter.split(df, df["_bin"])
 
         for fold_num, (tr, va) in enumerate(split_iter, 1):
-            yield (df.iloc[tr].drop(columns=helper).copy(),
-                   df.iloc[va].drop(columns=helper).copy(),
+            train_df = df.iloc[tr].copy()
+            val_df = df.iloc[va].copy()
+
+            # Verify no duplicate leakage across folds
+            if has_duplicates:
+                train_texts = set(train_df["_text_clean"])
+                val_texts = set(val_df["_text_clean"])
+                leaked = train_texts & val_texts
+                if leaked:
+                    print(f"  ⚠️  Fold {fold_num}: {len(leaked)} duplicate texts leaked (should be 0)!")
+                else:
+                    print(f"  ✓ Fold {fold_num}: No duplicate leakage")
+
+            yield (train_df.drop(columns=helper).copy(),
+                   val_df.drop(columns=helper).copy(),
                    fold_num)
     else:
         # STEP 3: Split with duplicate awareness

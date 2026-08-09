@@ -12,13 +12,13 @@ data:
   test_csv: "dataset/Test.csv"
   image_dir: "dataset/images"
 
-  # NO K-FOLD - use simple train/val split
-  k_folds: 1  # Disables K-fold
-  val_split: 0.15  # 85% train (3,483), 15% val (615) - larger for more stable metrics
+  # K-FOLD enabled for ensemble (5 models → average predictions)
+  k_folds: 5  # Each fold: 80% train (3,278), 20% val (820)
+  val_split: 0.15  # Ignored when k_folds > 1
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s7"  # Early stopping version
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s7_kfold5"  # K-fold ensemble
 
   batch_size: 2
   eval_batch_size: 2
@@ -74,9 +74,12 @@ training:
   num_workers: 8
   resume_from_checkpoint: true
 
-  # Early stopping - DISABLED for full training
+  # Early stopping - prevents wasting compute after best checkpoint
   early_stopping:
-    enabled: false  # Train full 4 epochs with LR 3e-5 (safe, won't overfit)
+    enabled: true
+    metric: "eval_loss"  # Stable signal (stops when model stops generalizing)
+    patience: 3  # Stop after 3 evals without improvement (~300 steps)
+    min_delta: 0.0001  # Very small threshold - catches tiny improvements, avoids noise
 
 augmentation:
   enabled: true  # Enhanced augmentation - contrast + rotation
