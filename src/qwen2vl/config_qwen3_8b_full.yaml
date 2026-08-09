@@ -18,7 +18,7 @@ data:
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s5"  # Early stopping version
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s6"  # Early stopping version
 
   batch_size: 2
   eval_batch_size: 2
@@ -30,29 +30,29 @@ training:
   warmup_ratio: 0.15
   lr_scheduler: "cosine"
 
-  # Regularization balanced for vision r=64
-  weight_decay: 0.03  # Reduced from 0.04 (r=64 needs less aggressive regularization than r=96)
+  # Regularization balanced for vision r=32
+  weight_decay: 0.02  # Lighter regularization for lower rank (r=32 has fewer params)
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  # LoRA config - Asymmetric ranks (Vision r=64, LLM r=16)
-  # Vision tower needs capacity for new script; LLM just needs task adaptation
+  # LoRA config - Asymmetric ranks (Vision r=32, LLM r=16)
+  # Testing if lower vision rank improves generalization on small dataset
   lora_r: 16  # Base rank for LLM
   lora_alpha: 32
   lora_dropout: 0.1  # Strong dropout for regularization
   use_rslora: true  # Rank-Stabilized LoRA
 
-  # Rank asymmetry - Vision r=64, LLM r=16 (~80M params, balanced capacity)
+  # Rank asymmetry - Vision r=32, LLM r=16 (~40M params, lower capacity)
   rank_pattern:
-    qkv: 64         # Vision attention (critical for stroke patterns)
-    proj: 64        # Vision output projection
-    linear_fc1: 64  # Vision MLP layer 1 (learns visual features)
-    linear_fc2: 64  # Vision MLP layer 2 (learns visual features)
+    qkv: 32         # Vision attention (critical for stroke patterns)
+    proj: 32        # Vision output projection
+    linear_fc1: 32  # Vision MLP layer 1 (learns visual features)
+    linear_fc2: 32  # Vision MLP layer 2 (learns visual features)
   alpha_pattern:
-    qkv: 128        # Scale alpha proportionally (2*rank)
-    proj: 128
-    linear_fc1: 128
-    linear_fc2: 128
+    qkv: 64         # Scale alpha proportionally (2*rank)
+    proj: 64
+    linear_fc1: 64
+    linear_fc2: 64
 
   # Target modules - Covers vision tower + DeepStack mergers + LLM
   # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
