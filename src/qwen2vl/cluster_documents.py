@@ -69,7 +69,14 @@ def load_vision_tower(model_name: str, device: str = "cuda"):
     )
 
     # Extract and freeze vision tower
-    vision_tower = model.visual
+    # Qwen3-VL uses model.model.visual instead of model.visual
+    if hasattr(model, 'visual'):
+        vision_tower = model.visual
+    elif hasattr(model, 'model') and hasattr(model.model, 'visual'):
+        vision_tower = model.model.visual
+    else:
+        raise AttributeError(f"Cannot find vision tower in {model_class.__name__}")
+
     vision_tower.eval()
     for param in vision_tower.parameters():
         param.requires_grad = False
