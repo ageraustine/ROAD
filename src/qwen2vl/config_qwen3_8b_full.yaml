@@ -41,7 +41,7 @@ training:
   lora_alpha: 64
   lora_dropout: 0.05  # ELITE: Lighter dropout (was 0.1, allow more learning)
   use_rslora: true  # Rank-Stabilized LoRA
-  use_dora: true
+  use_dora: false
 
   # Rank asymmetry - Vision r=64, LLM r=32 (~80M params, optimal capacity)
   rank_pattern:
