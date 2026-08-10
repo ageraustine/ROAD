@@ -14,11 +14,11 @@ data:
 
   # K-FOLD=3 ELITE (faster, focused, optimal)
   k_folds: 1  # Each fold: 67% train (~2,732), 33% val (~1,366)
-  val_split: 0.2  # Ignored when k_folds > 1
+  val_split: 0.1  # Ignored when k_folds > 1
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s9_elite"  # Elite k3 training
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_x"  # Elite k3 training
 
   batch_size: 2
   eval_batch_size: 2
