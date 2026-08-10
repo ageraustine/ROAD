@@ -37,21 +37,16 @@ def load_vision_tower(model_name: str, device: str = "cuda"):
     """Load only the vision tower from Qwen model (frozen, for embeddings)."""
     print(f"Loading vision tower from {model_name}...", end=" ", flush=True)
 
-    # Import model class
-    try:
-        from transformers import Qwen2VLForConditionalGeneration
-        model_class = Qwen2VLForConditionalGeneration
-    except ImportError:
-        # Fallback for older transformers
-        from transformers import AutoModelForVision2Seq
-        model_class = AutoModelForVision2Seq
+    # Use AutoModel to handle Qwen2/Qwen3 automatically
+    from transformers import AutoModelForVision2Seq
 
     # Load full model (we only need vision tower, but easier to load complete model)
-    model = model_class.from_pretrained(
+    model = AutoModelForVision2Seq.from_pretrained(
         model_name,
         torch_dtype=torch.bfloat16,
         device_map={"": device} if torch.cuda.is_available() else None,
         trust_remote_code=True,
+        ignore_mismatched_sizes=True,  # Handle Qwen2 vs Qwen3 differences
     )
 
     # Extract and freeze vision tower
@@ -214,9 +209,19 @@ def main():
     data_cfg = cfg["data"]
     model_cfg = cfg["model"]
 
-    # Resolve paths
-    train_csv = REPO_ROOT / data_cfg["train_csv"]
-    image_dir = REPO_ROOT / data_cfg["image_dir"]
+    # Resolve paths (handle both relative and absolute paths)
+    train_csv_path = data_cfg["train_csv"]
+    image_dir_path = data_cfg["image_dir"]
+
+    # Convert to Path and resolve
+    train_csv = Path(train_csv_path)
+    if not train_csv.is_absolute():
+        train_csv = REPO_ROOT / train_csv_path
+
+    image_dir = Path(image_dir_path)
+    if not image_dir.is_absolute():
+        image_dir = REPO_ROOT / image_dir_path
+
     image_ext = data_cfg.get("image_ext", ".jpg")
 
     if args.output:
@@ -229,13 +234,23 @@ def main():
     df = pd.read_csv(train_csv)
     print(f"Found {len(df)} training samples")
 
+    # Debug: print paths
+    print(f"Image directory: {image_dir}")
+    print(f"Image extension: {image_ext}")
+    print(f"Image dir exists: {image_dir.exists()}")
+    if image_dir.exists():
+        sample_files = list(image_dir.glob("*"))[:3]
+        print(f"Sample files in dir: {[f.name for f in sample_files]}")
+
     # Build image paths
     image_paths = [image_dir / f"{row['ID']}{image_ext}" for _, row in df.iterrows()]
 
     # Check missing images
     missing = [p for p in image_paths if not p.exists()]
     if missing:
-        print(f"⚠️  Warning: {len(missing)} images not found (will use fallback)")
+        print(f"⚠️  Warning: {len(missing)} images not found")
+        print(f"First missing path: {missing[0]}")
+        print(f"Will use fallback (blank images)")
 
     # Auto-estimate number of clusters if not provided
     # Rule of thumb: sqrt(n_samples) to n_samples/50
