@@ -1095,6 +1095,9 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
             verbose=False,  # Don't print patience counter every eval
         ))
 
+    # LoRA+ configuration (read from config for trainer instantiation)
+    loraplus_lr_ratio = train_cfg.get("loraplus_lr_ratio", None)
+
     # Create trainer without default callbacks (too verbose)
     # Use LoRAPlusTrainer if loraplus_lr_ratio is set, otherwise standard Trainer
     trainer_kwargs = {

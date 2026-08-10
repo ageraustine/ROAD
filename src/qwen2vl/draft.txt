@@ -298,3 +298,118 @@ Summary -> /content/drive/MyDrive/prd/qwen3-8b-full_s6/summary.json
 
 ✓ Training completed in 3.0 hours
 /content/ROAD
+
+/content/ROAD/src/qwen2vl
+🚀 Starting training...
+
+Failed to load /usr/local/lib/python3.12/dist-packages/torchao/_C_mxfp8.cpython-310-x86_64-linux-gnu.so: Could not load this library: /usr/local/lib/python3.12/dist-packages/torchao/_C_mxfp8.cpython-310-x86_64-linux-gnu.so
+Failed to load /usr/local/lib/python3.12/dist-packages/torchao/_C_cutlass_90a.abi3.so: Could not load this library: /usr/local/lib/python3.12/dist-packages/torchao/_C_cutlass_90a.abi3.so
+Loaded 4098 samples from Train.csv
+Checking for duplicate texts...
+  Found 15 unique texts with duplicates (39 total samples)
+  Assigning duplicate group IDs to keep copies together in same split...
+  Grouped 39 duplicate samples into 15 groups
+Computing semantic text features (digits, uppercase, lexical diversity, special chars, word length)...
+Splitting with duplicate-group awareness (keeps duplicate texts together)...
+  ✓ No duplicate text leakage - all copies kept together
+Stratified split by semantic features: digits (2) × uppercase (2) × lexical_diversity (3) = 12 bins:
+  Train: 3689 samples
+    Digit density: min=0.000, median=0.000, max=0.227
+    Uppercase ratio: min=0.000, median=0.039, max=0.229
+    Lexical diversity: min=0.417, median=0.938, max=1.000
+    Special chars: min=0.000, median=0.000, max=0.578
+    Avg word length: min=2.2, median=4.6, max=9.5
+  Val:   409 samples
+    Digit density: min=0.000, median=0.000, max=0.174
+    Uppercase ratio: min=0.000, median=0.039, max=0.200
+    Lexical diversity: min=0.308, median=0.938, max=1.000
+    Special chars: min=0.000, median=0.000, max=0.114
+    Avg word length: min=2.0, median=4.5, max=9.7
+
+======================================================================
+Training | Train: 3689 | Val: 409
+======================================================================
+Loading Qwen3-VL-8B-Instruct... Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[ERROR] `min_frames` is part of Qwen3VLVideoProcessorInitKwargs, but not documented. Make sure to add it to the docstring of the function in /usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/video_processing_qwen3_vl.py.
+[ERROR] `max_frames` is part of Qwen3VLVideoProcessorInitKwargs, but not documented. Make sure to add it to the docstring of the function in /usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/video_processing_qwen3_vl.py.
+✓ (79.0M trainable / 8846M total = 0.89%)
+  LoRA modules: 368 total (116 vision / 252 llm)
+Steps: 231/epoch × 5 epochs = 1155 total
+Starting training...
+
+Step 50/1155 | loss=1.1765 | lr=1.70e-05 | epoch=0.22
+{'loss': '1.176', 'grad_norm': '30.2', 'learning_rate': '1.704e-05', 'epoch': '0.2168'}
+{'eval_loss': '0.7874', 'eval_runtime': '70.72', 'eval_samples_per_second': '5.783', 'eval_steps_per_second': '2.899', 'epoch': '0.2168'}
+Eval @ step 50 | eval_loss=0.7874
+eval_score=0.1881 (cer=0.0960, wer=0.2801) ✓ (new best)
+Step 100/1155 | loss=0.6758 | lr=3.44e-05 | epoch=0.43
+{'loss': '0.6758', 'grad_norm': '36.86', 'learning_rate': '3.443e-05', 'epoch': '0.4336'}
+{'eval_loss': '0.5868', 'eval_runtime': '70.81', 'eval_samples_per_second': '5.776', 'eval_steps_per_second': '2.895', 'epoch': '0.4336'}
+Eval @ step 100 | eval_loss=0.5868
+eval_score=0.1441 (cer=0.0668, wer=0.2214) ✓ (new best)
+Step 150/1155 | loss=0.5863 | lr=3.99e-05 | epoch=0.65
+{'loss': '0.5863', 'grad_norm': '16.31', 'learning_rate': '3.989e-05', 'epoch': '0.6504'}
+{'eval_loss': '0.5336', 'eval_runtime': '70.48', 'eval_samples_per_second': '5.803', 'eval_steps_per_second': '2.909', 'epoch': '0.6504'}
+Eval @ step 150 | eval_loss=0.5336
+eval_score=0.1358 (cer=0.0646, wer=0.2070) ✓ (new best)
+Step 200/1155 | loss=0.5033 | lr=3.94e-05 | epoch=0.87
+{'loss': '0.5033', 'grad_norm': '17.57', 'learning_rate': '3.936e-05', 'epoch': '0.8672'}
+{'eval_loss': '0.4927', 'eval_runtime': '70.65', 'eval_samples_per_second': '5.789', 'eval_steps_per_second': '2.902', 'epoch': '0.8672'}
+Eval @ step 200 | eval_loss=0.4927
+eval_score=0.1289 (cer=0.0617, wer=0.1961) ✓ (new best)
+Step 250/1155 | loss=0.4421 | lr=3.84e-05 | epoch=1.08
+{'loss': '0.4421', 'grad_norm': '12.41', 'learning_rate': '3.838e-05', 'epoch': '1.082'}
+{'eval_loss': '0.4703', 'eval_runtime': '70.27', 'eval_samples_per_second': '5.821', 'eval_steps_per_second': '2.918', 'epoch': '1.082'}
+Eval @ step 250 | eval_loss=0.4703
+eval_score=0.1241 (cer=0.0543, wer=0.1939) ✓ (new best)
+Step 300/1155 | loss=0.3449 | lr=3.70e-05 | epoch=1.30
+{'loss': '0.3449', 'grad_norm': '12.38', 'learning_rate': '3.699e-05', 'epoch': '1.299'}
+{'eval_loss': '0.4854', 'eval_runtime': '70.32', 'eval_samples_per_second': '5.816', 'eval_steps_per_second': '2.915', 'epoch': '1.299'}
+Eval @ step 300 | eval_loss=0.4854
+Step 350/1155 | loss=0.3593 | lr=3.52e-05 | epoch=1.52
+{'loss': '0.3593', 'grad_norm': '22.47', 'learning_rate': '3.521e-05', 'epoch': '1.516'}
+{'eval_loss': '0.4725', 'eval_runtime': '70.3', 'eval_samples_per_second': '5.818', 'eval_steps_per_second': '2.916', 'epoch': '1.516'}
+Eval @ step 350 | eval_loss=0.4725
+eval_score=0.1169 (cer=0.0509, wer=0.1829) ✓ (new best)
+Step 400/1155 | loss=0.3347 | lr=3.31e-05 | epoch=1.73
+{'loss': '0.3347', 'grad_norm': '12.09', 'learning_rate': '3.308e-05', 'epoch': '1.733'}
+{'eval_loss': '0.4516', 'eval_runtime': '70.91', 'eval_samples_per_second': '5.768', 'eval_steps_per_second': '2.891', 'epoch': '1.733'}
+Eval @ step 400 | eval_loss=0.4516
+eval_score=0.1070 (cer=0.0464, wer=0.1676) ✓ (new best)
+Step 450/1155 | loss=0.3036 | lr=3.07e-05 | epoch=1.95
+{'loss': '0.3036', 'grad_norm': '13.11', 'learning_rate': '3.066e-05', 'epoch': '1.95'}
+{'eval_loss': '0.4395', 'eval_runtime': '71.43', 'eval_samples_per_second': '5.726', 'eval_steps_per_second': '2.87', 'epoch': '1.95'}
+Eval @ step 450 | eval_loss=0.4395
+Step 500/1155 | loss=0.2351 | lr=2.80e-05 | epoch=2.16
+{'loss': '0.2351', 'grad_norm': '5.025', 'learning_rate': '2.799e-05', 'epoch': '2.165'}
+{'eval_loss': '0.4633', 'eval_runtime': '71.4', 'eval_samples_per_second': '5.729', 'eval_steps_per_second': '2.871', 'epoch': '2.165'}
+Eval @ step 500 | eval_loss=0.4633
+eval_score=0.1046 (cer=0.0442, wer=0.1650) ✓ (new best)
+Step 550/1155 | loss=0.1656 | lr=2.51e-05 | epoch=2.38
+{'loss': '0.1656', 'grad_norm': '15.44', 'learning_rate': '2.514e-05', 'epoch': '2.382'}
+{'eval_loss': '0.464', 'eval_runtime': '71.21', 'eval_samples_per_second': '5.744', 'eval_steps_per_second': '2.879', 'epoch': '2.382'}
+Eval @ step 550 | eval_loss=0.4640
+Step 600/1155 | loss=0.1721 | lr=2.22e-05 | epoch=2.60
+{'loss': '0.1721', 'grad_norm': '5.439', 'learning_rate': '2.217e-05', 'epoch': '2.598'}
+{'eval_loss': '0.4641', 'eval_runtime': '70.33', 'eval_samples_per_second': '5.815', 'eval_steps_per_second': '2.915', 'epoch': '2.598'}
+Eval @ step 600 | eval_loss=0.4641
+Step 650/1155 | loss=0.1804 | lr=1.92e-05 | epoch=2.82
+{'loss': '0.1804', 'grad_norm': '7.843', 'learning_rate': '1.915e-05', 'epoch': '2.815'}
+{'eval_loss': '0.4679', 'eval_runtime': '70.66', 'eval_samples_per_second': '5.788', 'eval_steps_per_second': '2.901', 'epoch': '2.815'}
+Eval @ step 650 | eval_loss=0.4679
+
+⚠️  Early stopping triggered!
+    eval_loss plateaued at 0.4395
+    No improvement for 4 evaluations
+{'train_runtime': '1.158e+04', 'train_samples_per_second': '1.593', 'train_steps_per_second': '0.1', 'train_loss': '0.4215', 'epoch': '2.815'}
+
+======================================================================
+✓ Training | eval_score=0.1046 | Early stopped at epoch 2.8
+  Saved: /content/drive/MyDrive/prd/qwen3-8b-full_x/best
+======================================================================
+
+Summary -> /content/drive/MyDrive/prd/qwen3-8b-full_x/summary.json
+
+✓ Training completed in 3.2 hours
+/content/ROAD
+
