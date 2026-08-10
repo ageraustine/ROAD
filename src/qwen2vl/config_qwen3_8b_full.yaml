@@ -13,12 +13,12 @@ data:
   image_dir: "dataset/images"
 
   # K-FOLD=3 ELITE (faster, focused, optimal)
-  k_folds: 3  # Each fold: 67% train (~2,732), 33% val (~1,366)
-  val_split: 0.15  # Ignored when k_folds > 1
+  k_folds: 1  # Each fold: 67% train (~2,732), 33% val (~1,366)
+  val_split: 0.2  # Ignored when k_folds > 1
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s8_elite"  # Elite k3 training
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s9_elite"  # Elite k3 training
 
   batch_size: 2
   eval_batch_size: 2
@@ -37,12 +37,13 @@ training:
 
   # LoRA config - Asymmetric ranks (Vision r=64, LLM r=16) [KEPT AS REQUESTED]
   # Vision tower needs capacity for new script; LLM just needs task adaptation
-  lora_r: 16  # Base rank for LLM
-  lora_alpha: 32
+  lora_r: 32  # Base rank for LLM
+  lora_alpha: 64
   lora_dropout: 0.05  # ELITE: Lighter dropout (was 0.1, allow more learning)
   use_rslora: true  # Rank-Stabilized LoRA
+  use_dora: true
 
-  # Rank asymmetry - Vision r=64, LLM r=16 (~80M params, optimal capacity)
+  # Rank asymmetry - Vision r=64, LLM r=32 (~80M params, optimal capacity)
   rank_pattern:
     qkv: 64         # Vision attention (critical for stroke patterns)
     proj: 64        # Vision output projection
@@ -63,8 +64,8 @@ training:
 
   max_pixels: 2016000
 
-  eval_steps: 100
-  save_steps: 100
+  eval_steps: 50
+  save_steps: 50
   save_total_limit: 3
 
   # Compute CER+WER for monitoring (competition metric)
@@ -94,7 +95,7 @@ augmentation:
 inference:
   checkpoint: "outputs/qwen3-8b-full/best"
   output_csv: "submission_full.csv"
-  max_new_tokens: 150  # reduced from 256 to prevent hallucination
+  max_new_tokens: 300  # Increased for safety (conservative vs suggested 512/1024)
   num_beams: 5
-  repetition_penalty: 1.2  # Prevent infinite loops like "* * * * * * * *..." or "- - - - - -..."
-  batch_size: 8
+  repetition_penalty: 1.1  # Actually prevent infinite loops (1.0 = no penalty!)
+  batch_size: 4
