@@ -12,34 +12,34 @@ data:
   test_csv: "dataset/Test.csv"
   image_dir: "dataset/images"
 
-  # K-FOLD enabled for ensemble (5 models → average predictions)
-  k_folds: 5  # Each fold: 80% train (3,278), 20% val (820)
+  # K-FOLD=3 ELITE (faster, focused, optimal)
+  k_folds: 3  # Each fold: 67% train (~2,732), 33% val (~1,366)
   val_split: 0.15  # Ignored when k_folds > 1
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s7_kfold5"  # K-fold ensemble
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_s8_elite"  # Elite k3 training
 
   batch_size: 2
   eval_batch_size: 2
   gradient_accumulation_steps: 8  # effective batch = 16
 
-  # Extended training with conservative LR
-  epochs: 4
-  learning_rate: 0.00003  # 3e-5 (very conservative - better generalization, safer for longer training)
-  warmup_ratio: 0.15
+  # ELITE HYPERPARAMETERS - Optimized for 0.94 push
+  epochs: 5  # Train longer (early stopping protects against overfitting)
+  learning_rate: 0.00005  # 5e-5 (PROVEN - achieved 0.90 before, optimal convergence speed)
+  warmup_ratio: 0.1  # Shorter warmup = reach peak LR faster (was 0.15)
   lr_scheduler: "cosine"
 
-  # Regularization balanced for vision r=64 (sweet spot - achieved 0.90)
-  weight_decay: 0.03  # Balanced regularization for r=64
+  # LIGHTER regularization for elite performance (allow model to learn more)
+  weight_decay: 0.02  # Reduced from 0.03 (less constraint)
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  # LoRA config - Asymmetric ranks (Vision r=64, LLM r=16)
+  # LoRA config - Asymmetric ranks (Vision r=64, LLM r=16) [KEPT AS REQUESTED]
   # Vision tower needs capacity for new script; LLM just needs task adaptation
   lora_r: 16  # Base rank for LLM
   lora_alpha: 32
-  lora_dropout: 0.1  # Strong dropout for regularization
+  lora_dropout: 0.05  # ELITE: Lighter dropout (was 0.1, allow more learning)
   use_rslora: true  # Rank-Stabilized LoRA
 
   # Rank asymmetry - Vision r=64, LLM r=16 (~80M params, optimal capacity)
@@ -74,22 +74,22 @@ training:
   num_workers: 8
   resume_from_checkpoint: true
 
-  # Early stopping - prevents wasting compute after best checkpoint
+  # Early stopping - ELITE: More patient (allow longer training)
   early_stopping:
     enabled: true
     metric: "eval_loss"  # Stable signal (stops when model stops generalizing)
-    patience: 3  # Stop after 3 evals without improvement (~300 steps)
+    patience: 4  # ELITE: More patient (was 3, allow 4 evals = ~400 steps without improvement)
     min_delta: 0.0001  # Very small threshold - catches tiny improvements, avoids noise
 
 augmentation:
-  enabled: true  # Enhanced augmentation - contrast + rotation
-  # Simulate realistic document variations for better generalization
-  p_blur: 0.0          # DISABLED - docs already blurry
-  p_noise: 0.0         # DISABLED - docs already have grain
-  p_brightness: 0.0    # DISABLED - docs already faded
-  p_contrast: 0.30     # INCREASED - ink darkness variation (30% of images)
-  p_rotate: 0.10       # ENABLED - scanning alignment variation (10% of images)
-  max_rotation: 0.5    # ±0.5 degrees (very mild, won't hurt readability)
+  enabled: true  # Minimal augmentation - only geometric (no quality degradation)
+  # Only rotation - pure geometric transform that doesn't degrade image quality
+  p_blur: 0.0          # DISABLED - degrades quality
+  p_noise: 0.0         # DISABLED - degrades quality
+  p_brightness: 0.0    # DISABLED - degrades quality (docs already faded)
+  p_contrast: 0.0      # DISABLED - degrades quality (changes pixel values)
+  p_rotate: 0.10       # ENABLED - geometric only (10% of images)
+  max_rotation: 0.5    # ±0.5 degrees (pure geometric, preserves quality)
 
 inference:
   checkpoint: "outputs/qwen3-8b-full/best"

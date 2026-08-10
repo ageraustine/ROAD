@@ -2,6 +2,10 @@
 Qwen2-VL Inference for Historical HTR
 Generates submission.csv for competition
 
+AUTO-CONFIG: No config needed after training!
+  python inference.py --kfold
+  → Automatically finds and uses summary.json from most recent training
+
 K-Fold Ensemble Inference:
   python inference.py --kfold --ensemble-strategy rover_mbr
 
@@ -25,6 +29,9 @@ Ensemble Strategies (best to worst for historical OCR):
 
 Single Model Inference:
   python inference.py --checkpoint outputs/qwen3-8b-full/best/
+
+Manual Config:
+  python inference.py --config my_config.yaml
 """
 
 import os
@@ -886,7 +893,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Qwen2-VL HTR Inference - Generate competition submission"
     )
-    parser.add_argument("--config", default="config.yaml", help="Path to config file")
+    parser.add_argument("--config", default="config.yaml", help="Path to config file (auto-searches for summary.json if not found)")
     parser.add_argument("--checkpoint", default=None, help="Override checkpoint path (single model only)")
     parser.add_argument("--output", default=None, help="Override output CSV path")
     parser.add_argument(
@@ -907,9 +914,57 @@ def main():
     )
     args = parser.parse_args()
 
+    # Load config (with automatic fallback to summary.json)
     config_path = SCRIPT_DIR / args.config
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
+
+    if config_path.exists():
+        # Use provided config file
+        print(f"Loading config: {config_path.name}")
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+    else:
+        # Try to find summary.json from most recent training
+        print(f"Config not found: {config_path}")
+        print("Searching for summary.json from training...")
+
+        # Look for summary.json in common output directories
+        summary_candidates = []
+
+        # Check default output_dir patterns
+        if (REPO_ROOT / "outputs").exists():
+            summary_candidates.extend((REPO_ROOT / "outputs").rglob("summary.json"))
+
+        # Check Google Drive paths (common for Colab)
+        drive_paths = [
+            Path("/content/drive/MyDrive/prd"),
+            REPO_ROOT / "outputs",
+        ]
+        for drive_path in drive_paths:
+            if drive_path.exists():
+                summary_candidates.extend(drive_path.rglob("summary.json"))
+
+        # Sort by modification time (most recent first)
+        summary_candidates = sorted(
+            [s for s in summary_candidates if s.exists()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )
+
+        if summary_candidates:
+            summary_path = summary_candidates[0]
+            print(f"✓ Found training summary: {summary_path}")
+            print(f"  (Last modified: {pd.Timestamp.fromtimestamp(summary_path.stat().st_mtime)})")
+
+            with open(summary_path) as f:
+                cfg = json.load(f)
+
+            print(f"  Using config from training run")
+        else:
+            raise FileNotFoundError(
+                f"Config not found: {config_path}\n"
+                f"Also searched for summary.json but none found.\n"
+                f"Run training first or provide valid --config path."
+            )
 
     # CLI overrides
     if args.output:
