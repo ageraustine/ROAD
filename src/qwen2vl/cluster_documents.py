@@ -17,6 +17,8 @@ Then use in train.py:
 
 import argparse
 import warnings
+import logging
+import os
 from pathlib import Path
 
 import yaml
@@ -27,7 +29,12 @@ from PIL import Image
 from tqdm import tqdm
 from sklearn.cluster import KMeans
 
+# Suppress all warnings and verbose logs
 warnings.filterwarnings("ignore")
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("torch").setLevel(logging.ERROR)
 
 SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
@@ -117,9 +124,8 @@ def extract_vision_embeddings(
                 try:
                     img = Image.open(path).convert("RGB")
                     images.append(img)
-                except Exception as e:
-                    print(f"Error loading {path}: {e}")
-                    # Use blank image as fallback
+                except Exception:
+                    # Silent fallback: blank image
                     images.append(Image.new("RGB", (224, 224), (255, 255, 255)))
 
             # Preprocess images (this handles resizing, normalization, etc)
@@ -136,8 +142,13 @@ def extract_vision_embeddings(
                 pixel_values = inputs["pixel_values"].to(device, dtype=torch.bfloat16)
 
                 # Pass through vision tower
-                # Output shape: (batch, num_patches, hidden_dim)
-                vision_outputs = vision_tower(pixel_values)
+                # Qwen3-VL needs grid_thw parameter (temporal, height, width grid)
+                if "image_grid_thw" in inputs:
+                    grid_thw = inputs["image_grid_thw"].to(device)
+                    vision_outputs = vision_tower(pixel_values, grid_thw=grid_thw)
+                else:
+                    # Fallback for older models
+                    vision_outputs = vision_tower(pixel_values)
 
                 # Pool to get single vector per image
                 # Mean pooling over patches
@@ -151,10 +162,10 @@ def extract_vision_embeddings(
                 all_embeddings.append(pooled.cpu().numpy())
 
             except Exception as e:
-                print(f"Error processing batch {i}: {e}")
-                # Fallback: zero embeddings
+                # Silent fallback: zero embeddings (avoid cluttering output)
                 dummy_dim = 1024  # Typical hidden dim
                 all_embeddings.append(np.zeros((len(images), dummy_dim)))
+                # Uncomment for debugging: print(f"Error processing batch {i}: {e}")
 
     # Concatenate all batches
     embeddings = np.vstack(all_embeddings)
@@ -256,17 +267,8 @@ def main():
         output_path = REPO_ROOT / "dataset" / "document_clusters.csv"
 
     # Load training data
-    print(f"Loading training data from {train_csv}...")
     df = pd.read_csv(train_csv)
-    print(f"Found {len(df)} training samples")
-
-    # Debug: print paths
-    print(f"Image directory: {image_dir}")
-    print(f"Image extension: {image_ext}")
-    print(f"Image dir exists: {image_dir.exists()}")
-    if image_dir.exists():
-        sample_files = list(image_dir.glob("*"))[:3]
-        print(f"Sample files in dir: {[f.name for f in sample_files]}")
+    print(f"Loaded {len(df)} training samples from {train_csv.name}")
 
     # Build image paths
     image_paths = [image_dir / f"{row['ID']}{image_ext}" for _, row in df.iterrows()]
@@ -274,9 +276,7 @@ def main():
     # Check missing images
     missing = [p for p in image_paths if not p.exists()]
     if missing:
-        print(f"⚠️  Warning: {len(missing)} images not found")
-        print(f"First missing path: {missing[0]}")
-        print(f"Will use fallback (blank images)")
+        print(f"⚠️  Warning: {len(missing)}/{len(image_paths)} images not found (will use blank fallback)")
 
     # Auto-estimate number of clusters if not provided
     # Rule of thumb: sqrt(n_samples) to n_samples/50
