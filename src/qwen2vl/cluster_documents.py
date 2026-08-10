@@ -33,20 +33,39 @@ SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 
 
+def resolve_model_class(model_name: str):
+    """
+    Pick the right model class for Qwen2/2.5/3-VL models.
+    Copied from train.py for consistency.
+    """
+    name = model_name.lower()
+
+    if "qwen3.vl" in name or "qwen3-vl" in name:
+        from transformers import Qwen3VLForConditionalGeneration
+        return Qwen3VLForConditionalGeneration, "qwen3"
+    if "qwen2.5.vl" in name or "qwen2.5-vl" in name:
+        from transformers import Qwen2_5_VLForConditionalGeneration
+        return Qwen2_5_VLForConditionalGeneration, "qwen2.5"
+    if "qwen2.vl" in name or "qwen2-vl" in name:
+        from transformers import Qwen2VLForConditionalGeneration
+        return Qwen2VLForConditionalGeneration, "qwen2"
+
+    raise RuntimeError(f"Unknown Qwen-VL model: {model_name}")
+
+
 def load_vision_tower(model_name: str, device: str = "cuda"):
     """Load only the vision tower from Qwen model (frozen, for embeddings)."""
     print(f"Loading vision tower from {model_name}...", end=" ", flush=True)
 
-    # Use AutoModel to handle Qwen2/Qwen3 automatically
-    from transformers import AutoModelForVision2Seq
+    # Resolve model class
+    model_class, family = resolve_model_class(model_name)
 
     # Load full model (we only need vision tower, but easier to load complete model)
-    model = AutoModelForVision2Seq.from_pretrained(
+    model = model_class.from_pretrained(
         model_name,
         torch_dtype=torch.bfloat16,
         device_map={"": device} if torch.cuda.is_available() else None,
         trust_remote_code=True,
-        ignore_mismatched_sizes=True,  # Handle Qwen2 vs Qwen3 differences
     )
 
     # Extract and freeze vision tower
