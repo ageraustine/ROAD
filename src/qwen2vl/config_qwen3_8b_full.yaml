@@ -26,7 +26,7 @@ training:
 
   # ELITE HYPERPARAMETERS - Optimized for 0.94 push
   epochs: 5  # Train longer (early stopping protects against overfitting)
-  learning_rate: 0.00005  # 5e-5 (PROVEN - achieved 0.90 before, optimal convergence speed)
+  learning_rate: 0.00004  # 5e-5 (PROVEN - achieved 0.90 before, optimal convergence speed)
   warmup_ratio: 0.1  # Shorter warmup = reach peak LR faster (was 0.15)
   lr_scheduler: "cosine"
 
