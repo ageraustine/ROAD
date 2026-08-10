@@ -1,0 +1,89 @@
+You may not actually be overfitting as much as the loss says
+
+Your early stopping watches eval_loss but metric_for_best_model is eval_score. Those two diverge hard in generative VLM fine-tuning: teacher-forced NLL starts climbing as the model gets confident/peaked, while CER/WER keep falling for another epoch or two. Rising eval_loss at epoch 2 is the single most common false positive for "it's overfitting."
+
+Concretely, before changing any hyperparameter, plot eval_cer and eval_wer against eval_loss across the run. If CER is still descending where loss turns up, your r=32/96 "overfit" result and possibly your LR conclusion are both artifacts of the wrong signal.
+
+Fixes:
+
+Early-stop on eval_score, not eval_loss.
+Bump cer_samples from 200 → 500. At 200 samples a CER of ~0.08 has a standard error big enough that patience-4 on it is noise-chasing. That's presumably why you defaulted to loss in the first place.
+Eval every 100 steps instead of 50 with the larger sample — same wall clock, much less variance.
+
+2. Your CV has no document/scribe grouping — that's the fold variance
+
+make_splits groups only exact duplicate strings (which are just 40 rows, I checked) and stratifies on label properties: digit density, uppercase ratio, lexical diversity. None of those are the axis that HTR generalization actually runs along. The axis is the hand and the page — ink density, paper tone, stroke slant, scan condition, abbreviation conventions.
+
+With a random line-level split, lines from the same page land on both sides. Val is then optimistic and fold-to-fold difficulty is basically a lottery over which scribes happen to be in val. "2/5 folds are better" is the signature of that. (I also checked whether CSV row order encodes documents — it doesn't globally, adjacent-pair similarity 0.294 vs 0.287 for random pairs, so you can't recover groups from ordering.)
+
+The group_col plumbing already exists and is unused. Build the groups yourself:
+
+python
+# cheap per-image page fingerprint
+feats = [mean/std of grayscale, otsu threshold value, ink pixel ratio,
+         median stroke width (distance transform on binarized), 
+         dominant slant angle (Hough/gradient histogram), 
+         estimated x-height, JPEG dims/aspect]
+# → standardize → KMeans(k≈number of source documents you'd guess, 30-80)
+
+Or stronger: pool the frozen Qwen vision tower's patch embeddings per image and cluster those; pages cluster very cleanly because paper texture dominates. Then StratifiedGroupKFold(groups=page_cluster).
+
+Expect val scores to get worse and much tighter. That's the point — they'll start tracking the leaderboard, and then LR/rank ablations become trustworthy. I'd redo the r=32/96 comparison after this, because right now it's measured on a leaky, high-variance signal.
+
+4. Change where the LoRA is, not the rank
+
+You've been tuning capacity with a single global dial. r=64 on every vision block is a lot of parameters on layers that mostly do generic low-level feature extraction and don't need adapting. Better shaped hypothesis:
+
+Keep r=64 but restrict the vision LoRA to the top half of the blocks plus the merger and deepstack mergers. Lower blocks stay frozen. You keep the capacity where the script-specific stroke abstraction happens and drop ~half the vision params.
+Alternatively taper: r=16 in early blocks → r=64 in late blocks.
+
+That usually beats uniform rank reduction at equal parameter count, and it's a different point in design space than the 16/64 vs 32/96 comparison you've already run.
+
+Also worth trying: LoRA+ (higher LR on the B matrices, ratio 4–16). Reliably better convergence quality at the same nominal LR, and it's a one-line change in the optimizer group setup.
+
+5. Cheap regularizers you're not using
+Label smoothing 0.05. Your ground truth is genuinely inconsistent — prsence/presence, publique/public, Sixth/sixth, and 17% of rows (688) contain the ^ interlinear-insertion marker with what's likely uneven annotator application. Hard CE forces the model to memorize annotator idiosyncrasy. Smoothing directly attacks that. Set via label_smoothing_factor in TrainingArguments.
+NEFTune (neftune_noise_alpha=5). Built for exactly this regime — small SFT set, big model. Often worth a couple points of CER.
+Checkpoint souping. Average the LoRA weights of your top 3–4 checkpoints from a run (uniform mean of A and B works fine at fixed rank). Nearly free, almost always a small generalization gain, and it damps the checkpoint-selection noise you're currently exposed to.
+
+6. Your validation decoder doesn't match your submission decoder
+
+CERCallback uses num_beams=1 greedy. Inference config uses num_beams=5, repetition_penalty=1.1. So every checkpoint decision you make is on a decoder you don't ship.
+
+And repetition_penalty: 1.1 is likely actively hurting you here. This corpus is formulaic legal boilerplate — "all and singular the premises," "the said John Bawdon," "and delivered in the presence of." Repetition penalty punishes exactly the tokens that are legitimately repeated. Set it to 1.0 and control runaway generation with max_new_tokens (your targets max out at 120 chars / 22 words, so 300 is already generous — 128 is plenty and cuts loop risk structurally).
+
+I'd A/B greedy vs beam-5 on a held-out grouped fold before assuming beam helps. For line-level OCR with a well-fit model it frequently doesn't.
+
+The mechanism your objection is actually pointing at
+
+Degradation augs on already-degraded inputs have a specific failure mode that's worse than "no gain": they push some fraction of samples past the point where the ground truth is recoverable from the pixels. The label stays the same, so the model is being asked to produce a transcription that is no longer inferable from what it can see.
+
+What it learns instead is to fall back on the language prior. And on this corpus that's poison, because the corpus is boilerplate — "sealed and delivered in the presence of," "all and singular the premises," "one thousand six hundred sixty." A model that learns to guess formula from partial visual evidence will look fine on val (same formulas) and fail exactly where you need it: unusual names, dates, sums, the ^ insertions. That's a plausible contributor to your fold variance too — folds heavy in boilerplate score well, folds with more idiosyncratic content don't.
+
+So: blur, noise, JPEG, aggressive brightness/contrast — you were right, leave them off. I'd concede resolution jitter too, in the form it's implemented (more on that below).
+
+What survives the objection
+
+Shear, rotation, elastic, and crop jitter don't degrade anything. They're coordinate remappings — ink stays ink, background stays background, local contrast is preserved exactly. A sheared faded line is exactly as legible as an unsheared faded line. These are the ones carrying the actual regularization weight, and they're the ones you have fully disabled:
+
+yaml
+p_shear: 0.4
+max_shear: 6
+p_rotate: 0.5
+max_rotation: 2.0
+
+Plus elastic (α≈25, σ≈6, bicubic resampling — not bilinear, on thin faded strokes bilinear smears) and margin jitter on the line crop.
+
+Shear is the important one. Slant is the single most scribe-specific property of a hand, and slant jitter is the closest thing you have to synthesizing new scribes — which is precisely the generalization axis you're failing on.
+
+Two that need rewriting rather than deleting
+
+Morphology. Your objection lands here, but only on one half of it. The current code picks dilate or erode 50/50, then blurs. On faint broken ink, erode destroys strokes outright — that's a real legibility loss. Dilate on faded ink is closer to a restoration than a degradation. So make it asymmetric: dilate at p≈0.2, erode only on images whose ink ratio is above median, and drop the trailing GaussianBlur entirely (that line is doing pure damage on faded scans).
+
+Resolution jitter. The implementation is downscale→upscale-back, which returns a blurred image at the original size. That's degradation, and it's out-of-distribution — nothing in your test set is a round-tripped image. Delete it. But the underlying concern was legitimate: the model overfits to a single fixed pixel budget. Get that benefit the clean way instead — jitter max_pixels per sample (say 0.7×–1.0× of 2016000) and let the vision tower genuinely see a smaller image. One honest resize, no information returned as blur. Scale variation without degradation.
+
+Order-of-operations bug that makes all of this worse
+
+load_image downscales to max_pixels with LANCZOS, and then the collator runs the augmenter on the result. So every geometric transform is interpolating an already-downsampled image, and on faint thin strokes that compounds — it's a meaningful part of why augmentation would have looked quality-destroying if you tested it.
+
+Reverse it: augment at native resolution, downscale after. The subsequent LANCZOS downscale then partly absorbs the interpolation artifacts instead of amplifying them. Same augmentations, materially less damage.

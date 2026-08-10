@@ -496,6 +496,106 @@ class OCRCollator:
 
 
 # ─────────────────────────────────────────────────────────────
+# LoRA+ TRAINER
+# ─────────────────────────────────────────────────────────────
+
+class LoRAPlusTrainer(Trainer):
+    """
+    Custom Trainer implementing LoRA+ (Hayou et al. 2024).
+
+    LoRA+ uses different learning rates for A and B matrices:
+    - B matrices (lora_B): Higher LR (base_lr * loraplus_lr_ratio)
+    - A matrices (lora_A): Base LR
+
+    This improves convergence quality at same nominal LR.
+    Set loraplus_lr_ratio in config (typical: 4-16, recommended: 8).
+    """
+
+    def __init__(self, *args, loraplus_lr_ratio=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.loraplus_lr_ratio = loraplus_lr_ratio
+
+    def create_optimizer(self):
+        """Override to implement LoRA+ parameter groups."""
+        if self.loraplus_lr_ratio is None or self.loraplus_lr_ratio <= 1.0:
+            # Standard optimizer if LoRA+ disabled
+            return super().create_optimizer()
+
+        opt_model = self.model
+        if self.optimizer is None:
+            decay_params = []
+            decay_params_lora_b = []
+            nodecay_params = []
+            nodecay_params_lora_b = []
+
+            for name, param in opt_model.named_parameters():
+                if not param.requires_grad:
+                    continue
+
+                # Check if this is a LoRA B matrix
+                is_lora_b = "lora_B" in name
+
+                # Weight decay applied to most params except biases, layernorms, embeddings
+                if param.ndim < 2 or "bias" in name or "norm" in name or "embed" in name:
+                    if is_lora_b:
+                        nodecay_params_lora_b.append(param)
+                    else:
+                        nodecay_params.append(param)
+                else:
+                    if is_lora_b:
+                        decay_params_lora_b.append(param)
+                    else:
+                        decay_params.append(param)
+
+            base_lr = self.args.learning_rate
+            lora_b_lr = base_lr * self.loraplus_lr_ratio
+            weight_decay = self.args.weight_decay
+
+            optimizer_grouped_parameters = [
+                {
+                    "params": decay_params,
+                    "lr": base_lr,
+                    "weight_decay": weight_decay,
+                },
+                {
+                    "params": nodecay_params,
+                    "lr": base_lr,
+                    "weight_decay": 0.0,
+                },
+                {
+                    "params": decay_params_lora_b,
+                    "lr": lora_b_lr,
+                    "weight_decay": weight_decay,
+                },
+                {
+                    "params": nodecay_params_lora_b,
+                    "lr": lora_b_lr,
+                    "weight_decay": 0.0,
+                },
+            ]
+
+            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
+
+            # Remove lr from kwargs since we set it per group
+            optimizer_kwargs.pop("lr", None)
+
+            self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+
+            # Log LoRA+ setup
+            num_lora_b = len(decay_params_lora_b) + len(nodecay_params_lora_b)
+            num_lora_a = len(decay_params) + len(nodecay_params) - num_lora_b
+            print(f"\n{'='*60}")
+            print(f"LoRA+ Optimizer Setup:")
+            print(f"  Base LR (LoRA A): {base_lr:.2e}")
+            print(f"  LoRA B LR: {lora_b_lr:.2e} ({self.loraplus_lr_ratio}x)")
+            print(f"  LoRA A params: {num_lora_a}")
+            print(f"  LoRA B params: {num_lora_b}")
+            print(f"{'='*60}\n")
+
+        return self.optimizer
+
+
+# ─────────────────────────────────────────────────────────────
 # CALLBACKS
 # ─────────────────────────────────────────────────────────────
 
@@ -565,8 +665,8 @@ class CERCallback(TrainerCallback):
                     **inputs,
                     max_new_tokens=self.max_new_tokens,
                     do_sample=False,
-                    num_beams=1,  # greedy: this is a monitoring signal, not the submission
-                    repetition_penalty=1.1,  # Lighter penalty for training eval (less aggressive than inference)
+                    num_beams=5,  # FIXED: Match inference decoder (was greedy=1, caused checkpoint selection bias)
+                    repetition_penalty=1.0,  # FIXED: Match inference (legal boilerplate has legitimate repetition)
                     eos_token_id=tokenizer.eos_token_id,  # Explicitly enforce stop token
                     pad_token_id=tokenizer.pad_token_id,
                 )
@@ -827,6 +927,11 @@ def setup_model(cfg: dict):
     )
     model = get_peft_model(model, lora_config)
 
+    # LoRA+ configuration (different LR for A and B matrices)
+    loraplus_lr_ratio = train_cfg.get("loraplus_lr_ratio", None)
+    if loraplus_lr_ratio is not None and loraplus_lr_ratio > 1.0:
+        print(f"LoRA+ enabled: B matrices will learn {loraplus_lr_ratio}x faster than A matrices")
+
     # Verify LoRA targeting - check structure, not just total
     from peft.tuners.lora import LoraLayer
     lora_modules = [n for n, m in model.named_modules() if isinstance(m, LoraLayer)]
@@ -991,14 +1096,20 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
         ))
 
     # Create trainer without default callbacks (too verbose)
-    trainer = Trainer(
-        model=model,
-        args=args,
-        train_dataset=train_dataset,
-        eval_dataset=val_dataset,
-        data_collator=train_collator,
-        callbacks=callbacks,
-    )
+    # Use LoRAPlusTrainer if loraplus_lr_ratio is set, otherwise standard Trainer
+    trainer_kwargs = {
+        "model": model,
+        "args": args,
+        "train_dataset": train_dataset,
+        "eval_dataset": val_dataset,
+        "data_collator": train_collator,
+        "callbacks": callbacks,
+    }
+    if loraplus_lr_ratio:
+        trainer_kwargs["loraplus_lr_ratio"] = loraplus_lr_ratio
+        trainer = LoRAPlusTrainer(**trainer_kwargs)
+    else:
+        trainer = Trainer(**trainer_kwargs)
 
     # Remove default progress callback (replaced by our ProgressCallback)
     trainer.remove_callback(transformers.trainer_callback.ProgressCallback)

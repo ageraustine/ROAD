@@ -18,7 +18,7 @@ data:
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_x"  # Elite k3 training
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_y"  # Elite k3 training
 
   batch_size: 2
   eval_batch_size: 2
@@ -26,7 +26,7 @@ training:
 
   # ELITE HYPERPARAMETERS - Optimized for 0.94 push
   epochs: 5  # Train longer (early stopping protects against overfitting)
-  learning_rate: 0.00004  # 5e-5 (PROVEN - achieved 0.90 before, optimal convergence speed)
+  learning_rate: 0.00005  # 5e-5 (PROVEN - achieved 0.90 before, optimal convergence speed)
   warmup_ratio: 0.1  # Shorter warmup = reach peak LR faster (was 0.15)
   lr_scheduler: "cosine"
 
@@ -42,6 +42,7 @@ training:
   lora_dropout: 0.05  # ELITE: Lighter dropout (was 0.1, allow more learning)
   use_rslora: true  # Rank-Stabilized LoRA
   use_dora: false
+  loraplus_lr_ratio: 8.0  # LoRA+ - B matrices learn 8x faster than A matrices (proven: +0.5-1.5%)
 
   # Rank asymmetry - Vision r=64, LLM r=32 (~80M params, optimal capacity)
   rank_pattern:
@@ -75,27 +76,35 @@ training:
   num_workers: 8
   resume_from_checkpoint: true
 
+  # Quick-win regularizers (small dataset optimizations)
+  label_smoothing_factor: 0.05  # Handle annotator inconsistency (prsence/presence, publique/public, etc)
+  neftune_noise_alpha: 5  # NEFTune - proven for small SFT datasets
+
   # Early stopping - ELITE: More patient (allow longer training)
   early_stopping:
     enabled: true
-    metric: "eval_loss"  # Stable signal (stops when model stops generalizing)
+    metric: "eval_score"  # FIXED: Watch same metric we optimize (eval_loss rises while CER/WER fall)
     patience: 4  # ELITE: More patient (was 3, allow 4 evals = ~400 steps without improvement)
     min_delta: 0.0001  # Very small threshold - catches tiny improvements, avoids noise
 
 augmentation:
-  enabled: true  # Minimal augmentation - only geometric (no quality degradation)
-  # Only rotation - pure geometric transform that doesn't degrade image quality
+  enabled: true  # Geometric augmentation - coordinate transforms preserve ink quality
+  # Quality-degrading augs DISABLED (blur, noise, brightness, contrast)
   p_blur: 0.0          # DISABLED - degrades quality
   p_noise: 0.0         # DISABLED - degrades quality
   p_brightness: 0.0    # DISABLED - degrades quality (docs already faded)
   p_contrast: 0.0      # DISABLED - degrades quality (changes pixel values)
-  p_rotate: 0.10       # ENABLED - geometric only (10% of images)
-  max_rotation: 0.5    # ±0.5 degrees (pure geometric, preserves quality)
+
+  # Geometric augs ENABLED - pure coordinate remaps, no quality loss
+  p_rotate: 0.5        # Increased from 0.10 - alignment variation
+  max_rotation: 2.0    # ±2 degrees (was 0.5)
+  p_shear: 0.4         # NEW - most important (synthesizes scribe slant variation)
+  max_shear: 6         # degrees
 
 inference:
   checkpoint: "outputs/qwen3-8b-full/best"
   output_csv: "submission_full.csv"
-  max_new_tokens: 300  # Increased for safety (conservative vs suggested 512/1024)
+  max_new_tokens: 128  # Targets max at 120 chars - prevents loops structurally
   num_beams: 5
-  repetition_penalty: 1.1  # Actually prevent infinite loops (1.0 = no penalty!)
+  repetition_penalty: 1.0  # Legal boilerplate has legitimate repetition - don't penalize
   batch_size: 4
