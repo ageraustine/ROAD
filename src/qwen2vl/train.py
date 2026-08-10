@@ -697,13 +697,13 @@ class CERCallback(TrainerCallback):
             self.best_cer = float('inf')
             self.best_wer = float('inf')
 
+        # Always print eval_score (not just when it improves)
         if competition_score < self.best_score:
             self.best_score = competition_score
             self.best_cer = cer
             self.best_wer = wer
-            if not getattr(self, 'is_kfold', False):
-                print(f"eval_score={competition_score:.4f} (cer={cer:.4f}, wer={wer:.4f}) ✓ (new best)")
-        elif getattr(self, 'verbose', False):
+            print(f"eval_score={competition_score:.4f} (cer={cer:.4f}, wer={wer:.4f}) ✓ (new best)")
+        else:
             print(f"eval_score={competition_score:.4f} (cer={cer:.4f}, wer={wer:.4f})")
 
 

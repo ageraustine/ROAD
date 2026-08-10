@@ -42,7 +42,7 @@ training:
   lora_dropout: 0.05  # ELITE: Lighter dropout (was 0.1, allow more learning)
   use_rslora: true  # Rank-Stabilized LoRA
   use_dora: false
-  loraplus_lr_ratio: 8.0  # LoRA+ - B matrices learn 8x faster than A matrices (proven: +0.5-1.5%)
+  loraplus_lr_ratio: null  # DISABLED - logging anomaly suggests possible bug (0 A params, 368 B params)
 
   # Rank asymmetry - Vision r=64, LLM r=32 (~80M params, optimal capacity)
   rank_pattern:
