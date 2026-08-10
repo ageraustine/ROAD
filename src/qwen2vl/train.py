@@ -819,7 +819,7 @@ def setup_model(cfg: dict):
         modules_to_save=train_cfg.get("lora_modules_to_save"),
         lora_dropout=train_cfg["lora_dropout"],
         use_rslora=train_cfg.get("use_rslora", False),  # Rank-Stabilized LoRA
-        use_dora=train_cfg,get("use_dora", False),
+        use_dora=train_cfg.get("use_dora", False),
         rank_pattern=train_cfg.get("rank_pattern"),  # Asymmetric ranks (e.g., vision=64, llm=16)
         alpha_pattern=train_cfg.get("alpha_pattern"),  # Matching alpha for asymmetric ranks
         bias="none",
