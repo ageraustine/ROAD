@@ -22,7 +22,7 @@ data:
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_y"  # Elite k3 training
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_yfold"  # Elite k3 training
 
   batch_size: 2
   eval_batch_size: 2
