@@ -133,6 +133,16 @@ def remove_repetitions(text: str, max_repetitions: int = 5) -> str:
     # Check for consecutive word repetitions
     for i in range(len(tokens) - max_repetitions):
         word = tokens[i]
+
+        # Historical documents have legitimate single-char separators/marks
+        # Allow up to 7 for: dashes, tildes, asterisks, periods
+        # (e.g., "-------", "~~~~~~~", "*******", "....")
+        # All other tokens use normal threshold (5)
+        if word in ["-", "~", "–", "—", "*", "."]:
+            threshold = 7
+        else:
+            threshold = max_repetitions
+
         # Count consecutive occurrences
         consecutive = 1
         for j in range(i + 1, len(tokens)):
@@ -142,7 +152,7 @@ def remove_repetitions(text: str, max_repetitions: int = 5) -> str:
                 break
 
         # If we find excessive repetitions, truncate
-        if consecutive > max_repetitions:
+        if consecutive > threshold:
             # Keep text up to (but not including) the repetition
             truncated = " ".join(tokens[:i])
             return truncated.strip()
