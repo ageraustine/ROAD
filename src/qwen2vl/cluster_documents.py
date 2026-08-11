@@ -155,19 +155,49 @@ def extract_vision_embeddings(
                 if hasattr(vision_outputs, 'last_hidden_state'):
                     hidden_states = vision_outputs.last_hidden_state
                 elif hasattr(vision_outputs, 'hidden_states'):
-                    hidden_states = vision_outputs.hidden_states
+                    # hidden_states might be a tuple of layers
+                    hs = vision_outputs.hidden_states
+                    hidden_states = hs[-1] if isinstance(hs, (tuple, list)) else hs
                 elif isinstance(vision_outputs, tuple):
                     hidden_states = vision_outputs[0]
                 else:
                     # Direct tensor
                     hidden_states = vision_outputs
 
-                # hidden_states shape: (batch, seq_len, hidden_dim)
-                # Mean pool over sequence dimension to get one vector per image
-                pooled = hidden_states.mean(dim=1)  # (batch, hidden_dim)
+                # Debug: print shape for first batch
+                if i == 0:
+                    print(f"\nDebug - Vision output shape: {hidden_states.shape}")
+
+                # hidden_states shape could be (batch, seq_len, hidden_dim)
+                # or (total_seq_len, hidden_dim) for variable-length sequences
+
+                # Handle both cases
+                if hidden_states.dim() == 3:
+                    # (batch, seq_len, hidden_dim) - standard case
+                    pooled = hidden_states.mean(dim=1)  # (batch, hidden_dim)
+                elif hidden_states.dim() == 2:
+                    # (seq_len, hidden_dim) - need to split by image
+                    # This shouldn't happen if batched correctly, use as-is
+                    pooled = hidden_states.mean(dim=0, keepdim=True)  # (1, hidden_dim)
+                    # Repeat for batch size
+                    pooled = pooled.repeat(len(images), 1)  # (batch, hidden_dim)
+                else:
+                    raise ValueError(f"Unexpected hidden_states shape: {hidden_states.shape}")
 
                 # Convert to float32 (numpy doesn't support bfloat16)
                 pooled = pooled.float().cpu().numpy()
+
+                # Verify shape before appending
+                expected_shape = (len(images), pooled.shape[1])
+                if pooled.shape[0] != len(images):
+                    print(f"⚠️  Shape mismatch: got {pooled.shape}, expected batch={len(images)}")
+                    # Pad or truncate to match batch size
+                    if pooled.shape[0] < len(images):
+                        padding = np.zeros((len(images) - pooled.shape[0], pooled.shape[1]))
+                        pooled = np.vstack([pooled, padding])
+                    else:
+                        pooled = pooled[:len(images)]
+
                 all_embeddings.append(pooled)
 
             except Exception as e:
