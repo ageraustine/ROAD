@@ -166,7 +166,9 @@ def extract_vision_embeddings(
                 # Mean pool over sequence dimension to get one vector per image
                 pooled = hidden_states.mean(dim=1)  # (batch, hidden_dim)
 
-                all_embeddings.append(pooled.cpu().numpy())
+                # Convert to float32 (numpy doesn't support bfloat16)
+                pooled = pooled.float().cpu().numpy()
+                all_embeddings.append(pooled)
 
             except Exception as e:
                 # Fallback: zero embeddings
