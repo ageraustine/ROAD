@@ -17,7 +17,7 @@ data:
   group_col: "cluster_id"  # Column name in cluster_csv to use for grouping
 
   # K-FOLD=3 ELITE (faster, focused, optimal)
-  k_folds: 1  # Each fold: 67% train (~2,732), 33% val (~1,366)
+  k_folds: 3  # Each fold: 67% train (~2,732), 33% val (~1,366)
   val_split: 0.1  # Ignored when k_folds > 1
   seed: 42
 
