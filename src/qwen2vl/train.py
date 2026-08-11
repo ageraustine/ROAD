@@ -1429,62 +1429,76 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
                    val_df.drop(columns=helper).copy(),
                    fold_num)
     else:
-        # STEP 3: Split with duplicate awareness
+        # STEP 3: Split with duplicate AND document cluster awareness
         has_duplicates = (df["_dup_group"] >= 0).any()
+        has_groups = group_col is not None
 
-        if has_duplicates:
-            print("Splitting with duplicate-group awareness (keeps duplicate texts together)...")
+        if has_duplicates or has_groups:
+            # Create unified group column combining duplicates + user group_col
+            if has_duplicates and has_groups:
+                # Combine both: duplicate group + document cluster
+                df["_split_group"] = df["_dup_group"].astype(str) + "_" + df[group_col].astype(str)
+                print(f"Splitting with duplicate awareness + document clustering ('{group_col}')...")
+            elif has_duplicates:
+                # Only duplicates
+                df["_split_group"] = df["_dup_group"]
+                print("Splitting with duplicate-group awareness (keeps duplicate texts together)...")
+            else:
+                # Only user group_col (document clusters)
+                df["_split_group"] = df[group_col]
+                print(f"Splitting with document clustering ('{group_col}': {df[group_col].nunique()} clusters)...")
 
-            # Strategy: For each duplicate group, assign all members to train or val together
-            # 1. Get one representative per duplicate group
-            # 2. Combine with unique samples
-            # 3. Split representatives + unique samples with stratification
-            # 4. Propagate split assignment to all group members
+            helper.append("_split_group")
 
-            # Separate duplicates from unique samples
-            dup_mask = df["_dup_group"] >= 0
-            dup_df = df[dup_mask].copy()
-            unique_df = df[~dup_mask].copy()
+            # Strategy: For each group (duplicate/cluster), assign all members to train or val together
+            # 1. Get one representative per group
+            # 2. Split representatives with stratification
+            # 3. Propagate split assignment to all group members
 
-            # Get one representative per duplicate group (use first occurrence)
-            # Keep _orig_idx so we can map back
-            dup_representatives = dup_df.groupby("_dup_group", as_index=False).first()
+            # Get one representative per group (use first occurrence)
+            group_representatives = df.groupby("_split_group", as_index=False).first()
 
-            # Combine representatives with unique samples for stratified splitting
-            split_df = pd.concat([unique_df, dup_representatives], ignore_index=True)
-
-            # Split representatives + unique samples with stratification
+            # Split representatives with stratification
             split_train, split_val = train_test_split(
-                split_df, test_size=data_cfg["val_split"], stratify=split_df["_bin"], random_state=seed
+                group_representatives,
+                test_size=data_cfg["val_split"],
+                stratify=group_representatives["_bin"],
+                random_state=seed
             )
 
-            # Now propagate: which duplicate groups went to train vs val?
-            train_dup_groups = set(split_train[split_train["_dup_group"] >= 0]["_dup_group"])
-            val_dup_groups = set(split_val[split_val["_dup_group"] >= 0]["_dup_group"])
+            # Now propagate: which groups went to train vs val?
+            train_groups = set(split_train["_split_group"])
+            val_groups = set(split_val["_split_group"])
 
-            # Build train/val by:
-            # - Unique samples from split_train/split_val directly
-            # - All members of duplicate groups assigned to train/val
-            train_mask = (df["_dup_group"] == -1) & (df["_orig_idx"].isin(split_train["_orig_idx"]))
-            train_mask = train_mask | (df["_dup_group"].isin(train_dup_groups))
-
-            val_mask = (df["_dup_group"] == -1) & (df["_orig_idx"].isin(split_val["_orig_idx"]))
-            val_mask = val_mask | (df["_dup_group"].isin(val_dup_groups))
+            # Build train/val by group assignment
+            train_mask = df["_split_group"].isin(train_groups)
+            val_mask = df["_split_group"].isin(val_groups)
 
             train_df = df[train_mask].copy()
             val_df = df[val_mask].copy()
 
-            # Verify no leakage
-            train_texts = set(train_df["_text_clean"])
-            val_texts = set(val_df["_text_clean"])
-            leaked = train_texts & val_texts
-            if leaked:
-                print(f"  ⚠️  WARNING: {len(leaked)} texts still leaked (should be 0)!")
-            else:
-                print(f"  ✓ No duplicate text leakage - all copies kept together")
+            # Verify no leakage (for duplicates)
+            if has_duplicates:
+                train_texts = set(train_df["_text_clean"])
+                val_texts = set(val_df["_text_clean"])
+                leaked = train_texts & val_texts
+                if leaked:
+                    print(f"  ⚠️  WARNING: {len(leaked)} texts still leaked (should be 0)!")
+                else:
+                    print(f"  ✓ No duplicate text leakage - all copies kept together")
+
+            # Verify group separation (for document clusters)
+            if has_groups:
+                train_clusters = set(train_df[group_col])
+                val_clusters = set(val_df[group_col])
+                leaked_clusters = train_clusters & val_clusters
+                if leaked_clusters:
+                    print(f"  ⚠️  WARNING: {len(leaked_clusters)} clusters leaked across train/val!")
+                else:
+                    print(f"  ✓ No cluster leakage - {len(train_clusters)} clusters in train, {len(val_clusters)} in val")
 
         else:
-            # No duplicates: standard stratified split
+            # No duplicates or groups: standard stratified split
             train_df, val_df = train_test_split(
                 df, test_size=data_cfg["val_split"], stratify=df["_bin"], random_state=seed
             )
@@ -1528,6 +1542,22 @@ def train(cfg: dict):
     df = pd.read_csv(train_csv)
     nan_count = df['Target'].isna().sum()
     print(f"Loaded {len(df)} samples from {train_csv.name}" + (f" ({nan_count} NaN targets)" if nan_count > 0 else ""))
+
+    # Load document clusters if provided
+    cluster_csv = data_cfg.get("cluster_csv")
+    if cluster_csv:
+        cluster_path = REPO_ROOT / cluster_csv
+        if cluster_path.exists():
+            cluster_df = pd.read_csv(cluster_path)
+            df = df.merge(cluster_df, on="ID", how="left")
+            group_col = data_cfg.get("group_col")
+            if group_col and group_col in df.columns:
+                print(f"Loaded document clusters from {cluster_path.name}")
+                print(f"  {df[group_col].nunique()} unique clusters, avg {len(df)/df[group_col].nunique():.1f} samples/cluster")
+            else:
+                print(f"⚠️  Warning: cluster_csv provided but group_col '{group_col}' not found in merged data")
+        else:
+            print(f"⚠️  Warning: cluster_csv '{cluster_csv}' not found, proceeding without clustering")
 
     k_folds = data_cfg.get("k_folds", 1)
     n_folds = k_folds if k_folds > 1 else None

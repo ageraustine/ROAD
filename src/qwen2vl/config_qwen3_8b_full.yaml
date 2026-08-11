@@ -12,6 +12,10 @@ data:
   test_csv: "dataset/Test.csv"
   image_dir: "dataset/images"
 
+  # Document clustering for scribe/page-aware splitting
+  cluster_csv: "dataset/document_clusters.csv"  # Vision-based document clusters (68 clusters)
+  group_col: "cluster_id"  # Column name in cluster_csv to use for grouping
+
   # K-FOLD=3 ELITE (faster, focused, optimal)
   k_folds: 1  # Each fold: 67% train (~2,732), 33% val (~1,366)
   val_split: 0.1  # Ignored when k_folds > 1
@@ -84,7 +88,7 @@ training:
   early_stopping:
     enabled: true
     metric: "eval_score"  # FIXED: Watch same metric we optimize (eval_loss rises while CER/WER fall)
-    patience: 4  # ELITE: More patient (was 3, allow 4 evals = ~400 steps without improvement)
+    patience: 5  # ELITE: More patient (was 3, allow 4 evals = ~400 steps without improvement)
     min_delta: 0.0001  # Very small threshold - catches tiny improvements, avoids noise
 
 augmentation:
