@@ -80,6 +80,9 @@ training:
   num_workers: 8
   resume_from_checkpoint: true
 
+  # CER computation for early stopping (increased from 200 to reduce noise)
+  cer_samples: 500  # Use 500 samples for stable eval_score (37% of val set, low variance)
+
   # Quick-win regularizers (small dataset optimizations)
   label_smoothing_factor: 0.05  # Handle annotator inconsistency (prsence/presence, publique/public, etc)
   neftune_noise_alpha: 5  # NEFTune - proven for small SFT datasets
@@ -88,7 +91,7 @@ training:
   early_stopping:
     enabled: true
     metric: "eval_score"  # FIXED: Watch same metric we optimize (eval_loss rises while CER/WER fall)
-    patience: 5  # ELITE: More patient (was 3, allow 4 evals = ~400 steps without improvement)
+    patience: 4  # With cer_samples=500, signal is stable enough for patience=4
     min_delta: 0.0001  # Very small threshold - catches tiny improvements, avoids noise
 
 augmentation:
