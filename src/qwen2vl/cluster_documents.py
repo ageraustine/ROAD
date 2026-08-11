@@ -65,7 +65,7 @@ def load_vision_tower(model_name: str, device: str = "cuda"):
     print(f"Loading vision tower from {model_name}...", end=" ", flush=True)
 
     # Resolve model class
-    model_class, family = resolve_model_class(model_name)
+    model_class, _ = resolve_model_class(model_name)
 
     # Load full model (we only need vision tower, but easier to load complete model)
     model = model_class.from_pretrained(
@@ -150,14 +150,21 @@ def extract_vision_embeddings(
                     # Fallback for older models
                     vision_outputs = vision_tower(pixel_values)
 
-                # Pool to get single vector per image
-                # Mean pooling over patches
-                if isinstance(vision_outputs, tuple):
-                    vision_outputs = vision_outputs[0]
+                # Extract hidden states from output object
+                # vision_outputs is BaseModelOutputWithDeepstackFeatures
+                if hasattr(vision_outputs, 'last_hidden_state'):
+                    hidden_states = vision_outputs.last_hidden_state
+                elif hasattr(vision_outputs, 'hidden_states'):
+                    hidden_states = vision_outputs.hidden_states
+                elif isinstance(vision_outputs, tuple):
+                    hidden_states = vision_outputs[0]
+                else:
+                    # Direct tensor
+                    hidden_states = vision_outputs
 
-                # vision_outputs shape: (batch, seq_len, hidden_dim)
-                # Mean pool over sequence dimension
-                pooled = vision_outputs.mean(dim=1)  # (batch, hidden_dim)
+                # hidden_states shape: (batch, seq_len, hidden_dim)
+                # Mean pool over sequence dimension to get one vector per image
+                pooled = hidden_states.mean(dim=1)  # (batch, hidden_dim)
 
                 all_embeddings.append(pooled.cpu().numpy())
 
@@ -316,7 +323,7 @@ def main():
         n_clusters = args.n_clusters
 
     # Load vision tower
-    vision_tower, model_config = load_vision_tower(
+    vision_tower, _ = load_vision_tower(
         model_cfg["name"],
         device=args.device
     )
