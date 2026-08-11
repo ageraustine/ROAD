@@ -162,13 +162,27 @@ def extract_vision_embeddings(
                 all_embeddings.append(pooled.cpu().numpy())
 
             except Exception as e:
-                # Silent fallback: zero embeddings (avoid cluttering output)
+                # Fallback: zero embeddings
                 dummy_dim = 1024  # Typical hidden dim
                 all_embeddings.append(np.zeros((len(images), dummy_dim)))
-                # Uncomment for debugging: print(f"Error processing batch {i}: {e}")
+                print(f"⚠️  Error processing batch {i//batch_size}: {e}")
 
     # Concatenate all batches
     embeddings = np.vstack(all_embeddings)
+
+    # Diagnostics: Check if embeddings are valid
+    print(f"\nEmbedding diagnostics:")
+    print(f"  Shape: {embeddings.shape}")
+    print(f"  Mean: {embeddings.mean():.6f}")
+    print(f"  Std: {embeddings.std():.6f}")
+    print(f"  Min: {embeddings.min():.6f}")
+    print(f"  Max: {embeddings.max():.6f}")
+
+    # Check for all-zero embeddings
+    zero_count = (embeddings.sum(axis=1) == 0).sum()
+    if zero_count > 0:
+        print(f"  ⚠️  WARNING: {zero_count}/{len(embeddings)} embeddings are all zeros!")
+        print(f"  This suggests batch processing errors. Check error messages above.")
 
     return embeddings
 
@@ -200,6 +214,20 @@ def cluster_embeddings(embeddings: np.ndarray, n_clusters: int, seed: int = 42):
     unique, counts = np.unique(cluster_labels, return_counts=True)
     print(f"Cluster sizes: min={counts.min()}, max={counts.max()}, "
           f"median={int(np.median(counts))}, mean={counts.mean():.1f}")
+    print(f"Unique clusters: {len(unique)} (expected: {n_clusters})")
+
+    # Check if clustering failed (all in one cluster)
+    if len(unique) == 1:
+        print(f"\n⚠️  CLUSTERING FAILED: All samples assigned to cluster {unique[0]}")
+        print(f"  This usually means:")
+        print(f"  1. All embeddings are identical (check diagnostics above)")
+        print(f"  2. All embeddings are zeros (batch processing failed)")
+        print(f"  3. Normalization issue (divide by zero)")
+        print(f"\n  Normalized embedding stats:")
+        print(f"    Mean: {embeddings_normalized.mean():.6f}")
+        print(f"    Std: {embeddings_normalized.std():.6f}")
+        print(f"    Contains NaN: {np.isnan(embeddings_normalized).any()}")
+        print(f"    All zeros: {(embeddings_normalized == 0).all()}")
 
     return cluster_labels
 
