@@ -20,7 +20,7 @@ data:
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-single-textdiff"  # Single split with text difficulty stratification
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-single-textdiff-1"  # Single split with text difficulty stratification
 
   batch_size: 2
   eval_batch_size: 2
