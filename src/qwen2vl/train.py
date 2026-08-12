@@ -1587,7 +1587,7 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
 
     helper = ["_text_clean", "_dup_group", "_orig_idx", "_digit_density", "_uppercase_ratio", "_lexical_diversity",
               "_special_char_density", "_avg_word_length", "_has_digit", "_has_upper", "_text_len",
-              "_text_diff_bin", "_digit_bin", "_upper_bin", "_len_bin", "_bin",
+              "_text_diff_bin", "_digit_bin", "_upper_bin", "_bin",
               "difficulty_score", "named_entity_score", "number_complexity"]
 
     if group_col and group_col not in df.columns:
@@ -1660,8 +1660,12 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
                 df["_split_group"] = df["_dup_group"].astype(str) + "_" + df[group_col].astype(str)
                 print(f"Splitting with duplicate awareness + document clustering ('{group_col}')...")
             elif has_duplicates:
-                # Only duplicates
-                df["_split_group"] = df["_dup_group"]
+                # Only duplicates - assign unique group ID to non-duplicates
+                max_dup_group = df["_dup_group"].max()
+                df["_split_group"] = df.apply(
+                    lambda row: row["_dup_group"] if row["_dup_group"] >= 0 else max_dup_group + 1 + row.name,
+                    axis=1
+                )
                 print("Splitting with duplicate-group awareness (keeps duplicate texts together)...")
             else:
                 # Only user group_col (document clusters)
