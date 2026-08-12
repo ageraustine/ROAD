@@ -1518,9 +1518,9 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
                       on="ID", how="left")
 
         # Fill missing with median
-        df["difficulty_score"].fillna(df["difficulty_score"].median(), inplace=True)
-        df["named_entity_score"].fillna(df["named_entity_score"].median(), inplace=True)
-        df["number_complexity"].fillna(df["number_complexity"].median(), inplace=True)
+        df["difficulty_score"] = df["difficulty_score"].fillna(df["difficulty_score"].median())
+        df["named_entity_score"] = df["named_entity_score"].fillna(df["named_entity_score"].median())
+        df["number_complexity"] = df["number_complexity"].fillna(df["number_complexity"].median())
 
         print(f"  Text difficulty range: {df['difficulty_score'].min():.1f} - {df['difficulty_score'].max():.1f}")
         print(f"  Using TEXT DIFFICULTY stratification (analysis-driven)")
@@ -1679,12 +1679,30 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
             group_representatives = df.groupby("_split_group", as_index=False).first()
 
             # Split representatives with stratification
-            split_train, split_val = train_test_split(
-                group_representatives,
-                test_size=data_cfg["val_split"],
-                stratify=group_representatives["_bin"],
-                random_state=seed
-            )
+            # Try full stratification, fall back if bins too small
+            try:
+                split_train, split_val = train_test_split(
+                    group_representatives,
+                    test_size=data_cfg["val_split"],
+                    stratify=group_representatives["_bin"],
+                    random_state=seed
+                )
+                print(f"  ✓ Using full stratification (12 bins)")
+            except ValueError as e:
+                # Some bins have <2 samples after grouping - fall back to simpler stratification
+                print(f"  ⚠️  Full stratification failed (some bins too small after grouping)")
+                # Simplify to just has_digit × has_upper (4 bins, more robust)
+                group_representatives["_simple_bin"] = (
+                    group_representatives["_has_digit"].astype(str) + "_" +
+                    group_representatives["_has_upper"].astype(str)
+                )
+                split_train, split_val = train_test_split(
+                    group_representatives,
+                    test_size=data_cfg["val_split"],
+                    stratify=group_representatives["_simple_bin"],
+                    random_state=seed
+                )
+                print(f"  ✓ Using simplified stratification: digits (2) × names (2) = 4 bins")
 
             # Now propagate: which groups went to train vs val?
             train_groups = set(split_train["_split_group"])
