@@ -269,22 +269,26 @@ class ImageAugmenter:
         """
         Apply augmentation with optional adaptive strength based on document condition.
 
-        STRATEGY (based on dataset analysis: 57% good, 29% medium, 13% poor):
+        STRATEGY (4-class system based on dataset analysis):
 
-        Good condition (< 15, 57% of data):
-            - COMMON samples → standard augmentation
-            - Add degradation simulation (blur, noise, color jitter)
+        Excellent condition (< 15, 57% of data):
+            - COMMON samples → aggressive augmentation
+            - Synthesize degradation (blur, noise, color jitter) to add variety
             - Standard geometric augmentation
 
-        Medium condition (15-25, 29% of data):
+        Medium condition (15-30, 37% of data):
             - COMMON samples → standard augmentation
-            - Moderate degradation simulation
-            - Standard geometric augmentation
+            - Moderate degradation + standard geometric
 
-        Poor condition (> 25, 13% of data):
+        Poor condition (30-40, 5% of data):
             - RARE samples → INCREASE geometric diversity to prevent overfitting
             - DISABLE degradation simulation (already degraded)
-            - INCREASE geometric augmentation (burnt pages can still be scanned at angles)
+            - INCREASE geometric augmentation 1.5x
+
+        Very Poor condition (>40, 1% of data):
+            - EXTREMELY RARE outliers → MAXIMUM geometric diversity
+            - DISABLE all degradation (already destroyed)
+            - INCREASE geometric augmentation 2.5x (prevent memorization)
 
         Args:
             img: Input image
@@ -293,21 +297,22 @@ class ImageAugmenter:
         if not self.enabled:
             return img
 
-        # Adaptive augmentation based on document condition
+        # Adaptive augmentation based on document condition (4 classes)
         if condition_score is not None:
-            if condition_score < 15:  # Good condition (57% of data) - aggressive augmentation
+            if condition_score < 15:  # Excellent condition (57% of data)
                 # Synthesize degradation + standard geometric
                 p_degradation_mult = 1.2  # Add blur, noise, color variance
                 p_elastic_mult = 1.0
                 p_resolution_mult = 1.0
                 p_rotation_mult = 1.0
-                min_pixels_override = 0.75  # Can downsample more
+                min_pixels_override = 0.75
                 p_color_mult = 1.2
                 p_brightness_mult = 1.0
                 p_contrast_mult = 1.0
                 elastic_alpha_override = self.elastic_alpha
-            elif condition_score < 25:  # Medium condition (29% of data) - default
-                # Moderate degradation + standard geometric
+
+            elif condition_score < 30:  # Medium condition (37% of data)
+                # Standard augmentation
                 p_degradation_mult = 1.0
                 p_elastic_mult = 1.0
                 p_resolution_mult = 1.0
@@ -317,19 +322,31 @@ class ImageAugmenter:
                 p_brightness_mult = 1.0
                 p_contrast_mult = 1.0
                 elastic_alpha_override = self.elastic_alpha
-            else:  # Poor condition (>25, 13% of data - RARE!) - NO degradation, MORE geometric
-                # CRITICAL: Poor images are rare (13%) and need MORE augmentation diversity
-                # to prevent overfitting, but don't compound existing degradation.
-                # A burnt/torn document can still be scanned at different angles/resolutions!
-                p_degradation_mult = 0.0  # DISABLE blur, noise, morphology, JPEG (already degraded)
-                p_elastic_mult = 1.5      # INCREASE warping (burnt pages can still curl)
-                p_resolution_mult = 1.2   # INCREASE resolution jitter (scan quality varies)
-                p_rotation_mult = 1.5     # INCREASE rotation (alignment varies)
-                min_pixels_override = 0.7  # Allow more aggressive downsampling
-                p_color_mult = 0.0        # DISABLE color jitter (already discolored)
-                p_brightness_mult = 0.6   # REDUCE brightness (careful with faded ink)
-                p_contrast_mult = 0.6     # REDUCE contrast (careful with faded ink)
-                elastic_alpha_override = self.elastic_alpha * 1.3  # Stronger warping
+
+            elif condition_score < 40:  # Poor condition (5% of data - RARE!)
+                # RARE: No degradation, MORE geometric (1.5x)
+                p_degradation_mult = 0.0  # Already degraded
+                p_elastic_mult = 1.5      # More warping
+                p_resolution_mult = 1.5   # More resolution variance
+                p_rotation_mult = 1.5     # More rotation
+                min_pixels_override = 0.65
+                p_color_mult = 0.0        # Already discolored
+                p_brightness_mult = 0.5   # Careful with faded ink
+                p_contrast_mult = 0.5
+                elastic_alpha_override = self.elastic_alpha * 1.4
+
+            else:  # Very Poor condition (>40, 1% of data - EXTREMELY RARE!)
+                # CRITICAL: Extreme outliers need MAXIMUM geometric diversity
+                # These 30 images will overfit without aggressive augmentation
+                p_degradation_mult = 0.0  # Already destroyed
+                p_elastic_mult = 2.5      # MAXIMUM warping (2.5x)
+                p_resolution_mult = 2.5   # MAXIMUM resolution variance
+                p_rotation_mult = 2.0     # MAXIMUM rotation
+                min_pixels_override = 0.5  # Aggressive downsampling OK
+                p_color_mult = 0.0        # Already discolored
+                p_brightness_mult = 0.3   # Minimal (very faded)
+                p_contrast_mult = 0.3
+                elastic_alpha_override = self.elastic_alpha * 1.8  # Strongest warping
         else:
             # No condition score - use defaults
             p_degradation_mult = 1.0

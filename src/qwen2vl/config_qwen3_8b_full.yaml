@@ -96,26 +96,39 @@ augmentation:
   enabled: true  # Document-aware augmentation based on condition analysis
 
   # ═══════════════════════════════════════════════════════════════════════════════
-  # ADAPTIVE AUGMENTATION STRATEGY (based on dataset analysis: 57% good, 29% medium, 13% poor)
+  # ADAPTIVE AUGMENTATION STRATEGY - 4-CLASS SYSTEM
+  # Thresholds: 15, 30, 40 (chosen to isolate rare extreme cases)
   # ═══════════════════════════════════════════════════════════════════════════════
   #
-  # Good condition (<15, 57% of data):
-  #   - COMMON samples → standard augmentation
-  #   - Apply degradation simulation (blur, noise, color jitter) to synthesize variety
-  #   - Standard geometric augmentation
+  # Dataset Distribution:
+  #   Excellent (<15):    2,349 samples (57%) - Common, pristine docs
+  #   Medium (15-30):     1,529 samples (37%) - Common, moderate degradation
+  #   Poor (30-40):         190 samples (5%)  - Rare, significant damage
+  #   Very Poor (>40):       30 samples (1%)  - Extremely rare outliers
   #
-  # Medium condition (15-25, 29% of data):
-  #   - COMMON samples → standard augmentation
-  #   - Moderate degradation + standard geometric
+  # Augmentation Strategy:
   #
-  # Poor condition (>25, 13% of data - RARE!):
-  #   - RARE samples → INCREASE geometric diversity to prevent overfitting
-  #   - DISABLE degradation augmentation (already degraded - don't compound damage)
-  #   - INCREASE geometric augmentation by 1.5x (burnt/torn pages can still be scanned
-  #     at different angles, with different lens distortion, different resolutions!)
+  #   Excellent (<15, 57%):
+  #     - Synthesize degradation (blur, noise, color jitter 1.2x)
+  #     - Standard geometric augmentation
+  #     → Goal: Add variety to common pristine samples
   #
-  # CRITICAL INSIGHT: Separate DEGRADATION augs (blur, noise) from GEOMETRIC augs
-  # (rotation, warping, resolution). A burnt document can still be scanned crooked!
+  #   Medium (15-30, 37%):
+  #     - Standard augmentation (all multipliers = 1.0)
+  #     - Balanced degradation + geometric
+  #
+  #   Poor (30-40, 5% - RARE!):
+  #     - DISABLE degradation (already damaged)
+  #     - INCREASE geometric 1.5x (rotation, warping, resolution)
+  #     → Goal: Prevent overfitting to rare damaged samples
+  #
+  #   Very Poor (>40, 1% - EXTREME OUTLIERS!):
+  #     - DISABLE all degradation (already destroyed)
+  #     - MAXIMUM geometric 2.5x (aggressive warping, rotation, downsampling)
+  #     → Goal: Force model to generalize from 30 extreme cases
+  #
+  # CRITICAL INSIGHT: Separate DEGRADATION (blur, noise) from GEOMETRIC (rotation,
+  # warping). A burnt document can still be scanned at different angles!
   # ═══════════════════════════════════════════════════════════════════════════════
 
   # DEGRADATION augmentations (disabled for poor-condition docs)
