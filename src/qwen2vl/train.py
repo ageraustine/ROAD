@@ -31,6 +31,7 @@ import cv2  # Used in augmentation code (even if currently disabled)
 from io import BytesIO
 from PIL import Image, ImageFilter, ImageEnhance
 from sklearn.model_selection import train_test_split, StratifiedKFold
+from scipy.ndimage import gaussian_filter  # For elastic deformation
 
 # Suppress verbose warnings and progress bars
 warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
@@ -247,12 +248,64 @@ class ImageAugmenter:
         self.p_morphology = cfg.get("p_morphology", 0.0)  # dilate/erode (ink thickness)
         self.p_shear = cfg.get("p_shear", 0.0)  # slant jitter (scribe variation)
         self.max_shear = cfg.get("max_shear", 8)  # degrees
-        self.p_resolution = cfg.get("p_resolution", 0.0)  # resolution jitter
+        self.p_resolution = cfg.get("p_resolution", 0.0)  # OLD resolution jitter (downscale blur)
         self.p_jpeg = cfg.get("p_jpeg", 0.0)  # JPEG artifacts
 
-    def __call__(self, img: Image.Image) -> Image.Image:
+        # NEW: Document-condition augmentations (based on analysis)
+        self.p_elastic = cfg.get("p_elastic", 0.0)  # Paper warping/curling
+        self.elastic_alpha = cfg.get("elastic_alpha", 25)  # Displacement strength
+        self.elastic_sigma = cfg.get("elastic_sigma", 6)  # Smoothness
+        self.elastic_interpolation = cfg.get("elastic_interpolation", "bicubic")
+
+        self.p_color_jitter = cfg.get("p_color_jitter", 0.0)  # Paper color variance
+        self.hue_jitter = cfg.get("hue_jitter", 0.05)  # ±5%
+        self.saturation_jitter = cfg.get("saturation_jitter", 0.1)  # ±10%
+
+        self.p_resolution_jitter = cfg.get("p_resolution_jitter", 0.0)  # NEW proper resolution jitter
+        self.min_pixels_ratio = cfg.get("min_pixels_ratio", 0.7)
+        self.max_pixels_ratio = cfg.get("max_pixels_ratio", 1.0)
+
+    def __call__(self, img: Image.Image, condition_score: float = None) -> Image.Image:
+        """
+        Apply augmentation with optional adaptive strength based on document condition.
+
+        Args:
+            img: Input image
+            condition_score: Optional document condition score (0-100, higher = worse)
+                - Good condition (< 15): More aggressive augmentation (synthesize degradation)
+                - Medium condition (15-25): Default augmentation
+                - Poor condition (> 25): Minimal augmentation (preserve readability)
+        """
         if not self.enabled:
             return img
+
+        # Adaptive augmentation based on document condition
+        if condition_score is not None:
+            if condition_score < 15:  # Good condition - aggressive augmentation
+                p_elastic_mult = 1.3
+                p_resolution_mult = 1.0
+                min_pixels_override = 0.75  # Can downsample more
+                p_color_mult = 1.2
+                elastic_alpha_override = self.elastic_alpha * 1.2  # Stronger warping
+            elif condition_score < 25:  # Medium condition - default
+                p_elastic_mult = 1.0
+                p_resolution_mult = 1.0
+                min_pixels_override = self.min_pixels_ratio
+                p_color_mult = 1.0
+                elastic_alpha_override = self.elastic_alpha
+            else:  # Poor condition (>25) - minimal augmentation
+                p_elastic_mult = 0.65
+                p_resolution_mult = 0.5
+                min_pixels_override = 0.9  # Very conservative
+                p_color_mult = 0.4
+                elastic_alpha_override = self.elastic_alpha * 0.7  # Gentler warping
+        else:
+            # No condition score - use defaults
+            p_elastic_mult = 1.0
+            p_resolution_mult = 1.0
+            min_pixels_override = self.min_pixels_ratio
+            p_color_mult = 1.0
+            elastic_alpha_override = self.elastic_alpha
 
         if random.random() < self.p_blur:
             img = img.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.5, 1.5)))
@@ -322,6 +375,120 @@ class ImageAugmenter:
             buffer.seek(0)
             img = Image.open(buffer).convert('RGB')
 
+        # NEW: Elastic deformation (paper warping/curling)
+        # Based on document condition analysis - simulates physical paper deformation
+        # Adaptive: adjusted strength based on condition_score
+        if random.random() < (self.p_elastic * p_elastic_mult):
+            img = self._apply_elastic_transform(img, elastic_alpha_override)
+
+        # NEW: Color jitter (paper color variance - brown/cream aging)
+        # HUE/SATURATION ONLY - NO brightness/contrast (degrades quality)
+        # Adaptive: reduced probability for poor-condition docs
+        if random.random() < (self.p_color_jitter * p_color_mult):
+            img = self._apply_color_jitter(img)
+
+        # NEW: Resolution jitter (prevents overfitting to fixed pixel budget)
+        # Proper implementation: jitter max_pixels, not downscale→upscale blur
+        # Adaptive: adjusted min_pixels based on condition_score
+        if random.random() < (self.p_resolution_jitter * p_resolution_mult):
+            img = self._apply_resolution_jitter(img, min_pixels_override)
+
+        return img
+
+    def _apply_elastic_transform(self, img: Image.Image, alpha: float = None) -> Image.Image:
+        """
+        Apply elastic deformation to simulate paper warping/curling.
+
+        Based on upgrades.txt: α≈25, σ≈6, bicubic resampling
+        CRITICAL: Use bicubic, not bilinear (bilinear smears faded ink)
+
+        Args:
+            img: Input image
+            alpha: Optional override for displacement strength (adaptive augmentation)
+        """
+        arr = np.array(img)
+        h, w = arr.shape[:2]
+
+        # Generate random displacement fields
+        alpha_value = alpha if alpha is not None else self.elastic_alpha
+        dx = np.random.randn(h, w) * alpha_value
+        dy = np.random.randn(h, w) * alpha_value
+
+        # Smooth the displacement fields (Gaussian filter)
+        dx = gaussian_filter(dx, self.elastic_sigma, mode='constant', cval=0)
+        dy = gaussian_filter(dy, self.elastic_sigma, mode='constant', cval=0)
+
+        # Create meshgrid for remapping
+        x, y = np.meshgrid(np.arange(w), np.arange(h))
+        indices = (y + dy).astype(np.float32), (x + dx).astype(np.float32)
+
+        # Apply displacement with bicubic interpolation
+        # cv2.INTER_CUBIC = bicubic (preserves faded ink better than bilinear)
+        warped = cv2.remap(arr, indices[1], indices[0],
+                          interpolation=cv2.INTER_CUBIC,
+                          borderMode=cv2.BORDER_CONSTANT,
+                          borderValue=(255, 255, 255))
+
+        return Image.fromarray(warped)
+
+    def _apply_color_jitter(self, img: Image.Image) -> Image.Image:
+        """
+        Apply color jitter (hue/saturation ONLY) to simulate paper color variance.
+
+        Document condition analysis shows mean paper_color_variance = 27.9
+        (brown → cream shifts from aging, different paper batches)
+
+        IMPORTANT: NO brightness/contrast jitter - degrades already-faded docs
+        """
+        # Convert to HSV for hue/saturation adjustment
+        arr = np.array(img)
+        hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV).astype(np.float32)
+
+        # Hue jitter (brown ↔ cream color shifts)
+        hue_shift = random.uniform(-self.hue_jitter, self.hue_jitter) * 180  # OpenCV hue is 0-180
+        hsv[:, :, 0] = np.clip(hsv[:, :, 0] + hue_shift, 0, 180)
+
+        # Saturation jitter (faded vs vibrant paper)
+        sat_factor = random.uniform(1 - self.saturation_jitter, 1 + self.saturation_jitter)
+        hsv[:, :, 1] = np.clip(hsv[:, :, 1] * sat_factor, 0, 255)
+
+        # Convert back to RGB
+        rgb = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+        return Image.fromarray(rgb)
+
+    def _apply_resolution_jitter(self, img: Image.Image, min_pixels_ratio: float = None) -> Image.Image:
+        """
+        Apply resolution jitter (proper implementation).
+
+        OLD approach (disabled): downscale→upscale = blur artifact
+        NEW approach: genuinely resize to variable resolution
+
+        From upgrades.txt:
+        "Jitter max_pixels per sample (0.7×–1.0×) and let the vision tower
+        genuinely see a smaller image. One honest resize, no blur."
+
+        Args:
+            img: Input image
+            min_pixels_ratio: Optional override for minimum pixels ratio (adaptive augmentation)
+        """
+        w, h = img.size
+        current_pixels = w * h
+
+        # Random pixel budget between min and max ratio
+        min_ratio = min_pixels_ratio if min_pixels_ratio is not None else self.min_pixels_ratio
+        ratio = random.uniform(min_ratio, self.max_pixels_ratio)
+        target_pixels = int(current_pixels * ratio)
+
+        # Calculate new dimensions maintaining aspect ratio
+        scale = (target_pixels / current_pixels) ** 0.5
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+
+        # One honest resize (LANCZOS for quality)
+        # Vision tower will see this resolution (no upscale back)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+
         return img
 
 
@@ -345,9 +512,12 @@ def build_dataset(df: pd.DataFrame, image_dir: Path, image_ext: str = ".jpg",
                   split_name: str = "") -> Dataset:
     """
     Build a HF dataset, reporting every dropped row rather than silently skipping.
+
+    Includes condition_score if available in df for adaptive augmentation.
     """
     samples = []
     dropped = {"missing_image": 0, "empty_target": 0, "bad_id": 0}
+    has_condition = "condition_score" in df.columns
 
     for _, row in tqdm(df.iterrows(), total=len(df),
                        desc=f"Building {split_name or 'dataset'}", leave=False):
@@ -372,7 +542,15 @@ def build_dataset(df: pd.DataFrame, image_dir: Path, image_ext: str = ".jpg",
             dropped["missing_image"] += 1
             continue
 
-        samples.append({"id": img_id, "image_path": str(img_path), "text": target})
+        sample = {"id": img_id, "image_path": str(img_path), "text": target}
+
+        # Add condition score if available (for adaptive augmentation)
+        if has_condition:
+            condition = row.get("condition_score")
+            if condition is not None and not pd.isna(condition):
+                sample["condition_score"] = float(condition)
+
+        samples.append(sample)
 
     n_dropped = sum(dropped.values())
     label = split_name or "dataset"
@@ -426,7 +604,9 @@ class OCRCollator:
         for ex in examples:
             img = load_image(ex["image_path"], self.max_pixels)
             if self.augmenter is not None:
-                img = self.augmenter(img)
+                # Pass condition score for adaptive augmentation (if available)
+                condition_score = ex.get("condition_score", None)
+                img = self.augmenter(img, condition_score=condition_score)
             images.append(img)
             texts.append(ex["text"])
 
@@ -1328,37 +1508,75 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
         print("  No duplicate texts found")
         df["_dup_group"] = -1
 
-    # STEP 2: Compute semantic text-based features (fast, interpretable, ground-truth based)
-    print("Computing semantic text features (digits, uppercase, lexical diversity, special chars, word length)...")
+    # STEP 2: Load text difficulty scores (pre-computed from analysis)
+    text_difficulty_path = REPO_ROOT / "dataset" / "text_difficulty.csv"
+
+    if text_difficulty_path.exists():
+        print(f"Loading text difficulty scores from {text_difficulty_path.name}...")
+        text_diff_df = pd.read_csv(text_difficulty_path)
+        df = df.merge(text_diff_df[["ID", "difficulty_score", "named_entity_score", "number_complexity"]],
+                      on="ID", how="left")
+
+        # Fill missing with median
+        df["difficulty_score"].fillna(df["difficulty_score"].median(), inplace=True)
+        df["named_entity_score"].fillna(df["named_entity_score"].median(), inplace=True)
+        df["number_complexity"].fillna(df["number_complexity"].median(), inplace=True)
+
+        print(f"  Text difficulty range: {df['difficulty_score'].min():.1f} - {df['difficulty_score'].max():.1f}")
+        print(f"  Using TEXT DIFFICULTY stratification (analysis-driven)")
+    else:
+        print(f"⚠️  Text difficulty CSV not found at {text_difficulty_path}")
+        print("  Falling back to computing basic semantic features...")
+        # Compute basic features as fallback
+        df["_digit_density"] = df["Target"].apply(compute_digit_density)
+        df["_uppercase_ratio"] = df["Target"].apply(compute_uppercase_ratio)
+        df["_lexical_diversity"] = df["Target"].apply(compute_lexical_diversity)
+
+        # Create proxy difficulty score
+        df["difficulty_score"] = (
+            df["_digit_density"] * 50 +  # Numbers are hard
+            df["_uppercase_ratio"] * 30 +  # Names are hard
+            df["_lexical_diversity"] * 20  # Diverse vocab is hard
+        )
+        df["named_entity_score"] = df["_uppercase_ratio"] * 100
+        df["number_complexity"] = df["_digit_density"] * 100
+
+    # Compute remaining text features for logging
     df["_digit_density"] = df["Target"].apply(compute_digit_density)
     df["_uppercase_ratio"] = df["Target"].apply(compute_uppercase_ratio)
     df["_lexical_diversity"] = df["Target"].apply(compute_lexical_diversity)
     df["_special_char_density"] = df["Target"].apply(compute_special_char_density)
     df["_avg_word_length"] = df["Target"].apply(compute_avg_word_length)
 
-    # Stratify by digit density (2 bins: has_numbers vs minimal_numbers)
-    try:
-        df["_digit_bin"] = pd.qcut(df["_digit_density"], q=2, labels=["no_nums", "has_nums"], duplicates="drop")
-    except ValueError:
-        df["_digit_bin"] = "has_nums"
+    # STRATIFICATION STRATEGY (based on analysis):
+    # Text difficulty (3 bins) × Has digits (2) × Has uppercase (2) × Length (5) = 60 bins
 
-    # Stratify by uppercase ratio (2 bins: informal vs formal)
+    # 1. Text difficulty bins (Easy/Medium/Hard)
     try:
-        df["_upper_bin"] = pd.qcut(df["_uppercase_ratio"], q=2, labels=["informal", "formal"], duplicates="drop")
+        df["_text_diff_bin"] = pd.qcut(df["difficulty_score"], q=3, labels=["easy", "medium", "hard"], duplicates="drop")
     except ValueError:
-        df["_upper_bin"] = "informal"
+        df["_text_diff_bin"] = "medium"
 
-    # Stratify by lexical diversity (3 bins: repetitive/moderate/diverse vocabulary)
-    try:
-        df["_lex_bin"] = pd.qcut(df["_lexical_diversity"], q=3, labels=["repetitive", "moderate", "diverse"], duplicates="drop")
-    except ValueError:
-        df["_lex_bin"] = "moderate"
+    # 2. Has digits (binary: yes/no)
+    df["_has_digit"] = df["Target"].str.contains(r"\d", regex=True, na=False)
+    df["_digit_bin"] = df["_has_digit"].map({True: "has_nums", False: "no_nums"})
 
-    # Combine: digits (2) × uppercase (2) × lexical_diversity (3) = 12 bins
-    # Captures: numeric content, formality, vocabulary complexity
-    df["_bin"] = (df["_digit_bin"].astype(str) + "_" +
-                  df["_upper_bin"].astype(str) + "_" +
-                  df["_lex_bin"].astype(str))
+    # 3. Has uppercase (binary: yes/no - indicates names)
+    df["_has_upper"] = df["Target"].str.contains(r"[A-Z]", regex=True, na=False)
+    df["_upper_bin"] = df["_has_upper"].map({True: "has_names", False: "no_names"})
+
+    # Combine: text_difficulty (3) × digits (2) × uppercase (2) = 12 bins
+    # Simple, robust stratification that ensures train and val have same distribution of:
+    # - Easy/medium/hard texts (captures complexity)
+    # - Texts with/without numbers (numbers are harder to transcribe)
+    # - Texts with/without names (names are not in language prior)
+    # Note: Removed length bins to avoid rare combinations (some bins had <2 samples)
+    df["_bin"] = (df["_text_diff_bin"].astype(str) + "_" +
+                  df["_digit_bin"].astype(str) + "_" +
+                  df["_upper_bin"].astype(str))
+
+    # Keep text_len for logging
+    df["_text_len"] = df["Target"].str.len()
 
     k_folds = data_cfg.get("k_folds", 1)
     seed = data_cfg.get("seed", 42)
@@ -1368,7 +1586,9 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
     df["_orig_idx"] = df.index
 
     helper = ["_text_clean", "_dup_group", "_orig_idx", "_digit_density", "_uppercase_ratio", "_lexical_diversity",
-              "_special_char_density", "_avg_word_length", "_digit_bin", "_upper_bin", "_lex_bin", "_bin"]
+              "_special_char_density", "_avg_word_length", "_has_digit", "_has_upper", "_text_len",
+              "_text_diff_bin", "_digit_bin", "_upper_bin", "_len_bin", "_bin",
+              "difficulty_score", "named_entity_score", "number_complexity"]
 
     if group_col and group_col not in df.columns:
         raise ValueError(f"group_col '{group_col}' not in the CSV columns")
@@ -1407,7 +1627,7 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
             split_iter = splitter.split(df, df["_bin"], groups=df["_fold_group"])
         else:
             # Standard k-fold (no duplicates, no grouping)
-            print(f"Stratified {k_folds}-fold by semantic features: digits (2) × uppercase (2) × lexical_diversity (3) = 12 bins.")
+            print(f"Stratified {k_folds}-fold by TEXT DIFFICULTY: difficulty (3) × digits (2) × names (2) = 12 bins")
             splitter = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=seed)
             split_iter = splitter.split(df, df["_bin"])
 
@@ -1515,19 +1735,23 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
         train_wlen = train_df["_avg_word_length"]
         val_wlen = val_df["_avg_word_length"]
 
-        print(f"Stratified split by semantic features: digits (2) × uppercase (2) × lexical_diversity (3) = 12 bins:")
+        # Get difficulty scores for logging
+        train_diff = train_df.get("difficulty_score", train_df["_lexical_diversity"])
+        val_diff = val_df.get("difficulty_score", val_df["_lexical_diversity"])
+
+        print(f"Stratified split by TEXT DIFFICULTY: difficulty (3) × digits (2) × names (2) = 12 bins")
         print(f"  Train: {len(train_df)} samples")
+        print(f"    Text difficulty: min={train_diff.min():.1f}, median={train_diff.median():.1f}, max={train_diff.max():.1f}")
         print(f"    Digit density: min={train_digits.min():.3f}, median={train_digits.median():.3f}, max={train_digits.max():.3f}")
         print(f"    Uppercase ratio: min={train_upper.min():.3f}, median={train_upper.median():.3f}, max={train_upper.max():.3f}")
         print(f"    Lexical diversity: min={train_lex.min():.3f}, median={train_lex.median():.3f}, max={train_lex.max():.3f}")
-        print(f"    Special chars: min={train_spec.min():.3f}, median={train_spec.median():.3f}, max={train_spec.max():.3f}")
-        print(f"    Avg word length: min={train_wlen.min():.1f}, median={train_wlen.median():.1f}, max={train_wlen.max():.1f}")
+        print(f"    Text length: min={train_df['_text_len'].min()}, median={train_df['_text_len'].median():.0f}, max={train_df['_text_len'].max()}")
         print(f"  Val:   {len(val_df)} samples")
+        print(f"    Text difficulty: min={val_diff.min():.1f}, median={val_diff.median():.1f}, max={val_diff.max():.1f}")
         print(f"    Digit density: min={val_digits.min():.3f}, median={val_digits.median():.3f}, max={val_digits.max():.3f}")
         print(f"    Uppercase ratio: min={val_upper.min():.3f}, median={val_upper.median():.3f}, max={val_upper.max():.3f}")
         print(f"    Lexical diversity: min={val_lex.min():.3f}, median={val_lex.median():.3f}, max={val_lex.max():.3f}")
-        print(f"    Special chars: min={val_spec.min():.3f}, median={val_spec.median():.3f}, max={val_spec.max():.3f}")
-        print(f"    Avg word length: min={val_wlen.min():.1f}, median={val_wlen.median():.1f}, max={val_wlen.max():.1f}")
+        print(f"    Text length: min={val_df['_text_len'].min()}, median={val_df['_text_len'].median():.0f}, max={val_df['_text_len'].max()}")
 
         yield train_df.drop(columns=helper), val_df.drop(columns=helper), None
 
@@ -1558,6 +1782,26 @@ def train(cfg: dict):
                 print(f"⚠️  Warning: cluster_csv provided but group_col '{group_col}' not found in merged data")
         else:
             print(f"⚠️  Warning: cluster_csv '{cluster_csv}' not found, proceeding without clustering")
+
+    # Load document condition scores for adaptive augmentation (if available)
+    condition_csv = REPO_ROOT / "dataset" / "document_condition.csv"
+    if condition_csv.exists():
+        condition_df = pd.read_csv(condition_csv)
+        # Filter to successful analyses only
+        condition_df = condition_df[condition_df["success"] == True]
+        # Merge condition scores
+        df = df.merge(condition_df[["ID", "condition_score"]], on="ID", how="left")
+        # Fill missing with median (for any images that failed analysis)
+        median_cond = df["condition_score"].median()
+        n_missing = df["condition_score"].isna().sum()
+        if n_missing > 0:
+            df.loc[df["condition_score"].isna(), "condition_score"] = median_cond
+        print(f"Loaded document condition scores from {condition_csv.name}")
+        print(f"  Mean: {df['condition_score'].mean():.1f}, Median: {median_cond:.1f}, Std: {df['condition_score'].std():.1f}")
+        if n_missing > 0:
+            print(f"  Filled {n_missing} missing values with median")
+    else:
+        print(f"ℹ️  Document condition scores not found ({condition_csv.name}), proceeding without adaptive augmentation")
 
     k_folds = data_cfg.get("k_folds", 1)
     n_folds = k_folds if k_folds > 1 else None

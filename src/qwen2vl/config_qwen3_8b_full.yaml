@@ -12,17 +12,15 @@ data:
   test_csv: "dataset/Test.csv"
   image_dir: "dataset/images"
 
-  # Document clustering for scribe/page-aware splitting
-  cluster_csv: "dataset/document_clusters.csv"  # Vision-based document clusters (68 clusters)
-  group_col: "cluster_id"  # Column name in cluster_csv to use for grouping
-
-  # K-FOLD=3 ELITE (faster, focused, optimal)
-  k_folds: 3  # Each fold: 67% train (~2,732), 33% val (~1,366)
-  val_split: 0.1  # Ignored when k_folds > 1
+  # SINGLE SPLIT with TEXT DIFFICULTY stratification (analysis-driven)
+  # Stratifies by: text difficulty (3 bins) × digits (2) × names (2) = 12 bins
+  # Ensures train/val have same distribution of easy/medium/hard texts
+  k_folds: 1  # Single 90/10 split (more data than k-fold's 67%)
+  val_split: 0.1  # 90% train (~3,688), 10% val (~410)
   seed: 42
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-full_yfold"  # Elite k3 training
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-single-textdiff"  # Single split with text difficulty stratification
 
   batch_size: 2
   eval_batch_size: 2
@@ -95,18 +93,47 @@ training:
     min_delta: 0.0001  # Very small threshold - catches tiny improvements, avoids noise
 
 augmentation:
-  enabled: true  # Geometric augmentation - coordinate transforms preserve ink quality
-  # Quality-degrading augs DISABLED (blur, noise, brightness, contrast)
+  enabled: true  # Document-aware augmentation based on condition analysis
+  # ADAPTIVE AUGMENTATION: Strength automatically adjusts per document based on condition_score
+  # - Good condition (< 15): Aggressive augmentation (synthesize degradation)
+  # - Medium (15-25): Default settings (below)
+  # - Poor (> 25): Minimal augmentation (preserve readability)
+
+  # Quality-degrading augs DISABLED (docs already degraded)
   p_blur: 0.0          # DISABLED - degrades quality
-  p_noise: 0.0         # DISABLED - degrades quality
+  p_noise: 0.0         # DISABLED - degrades quality (docs already grainy)
   p_brightness: 0.0    # DISABLED - degrades quality (docs already faded)
   p_contrast: 0.0      # DISABLED - degrades quality (changes pixel values)
 
   # Geometric augs ENABLED - pure coordinate remaps, no quality loss
-  p_rotate: 0.5        # Increased from 0.10 - alignment variation
-  max_rotation: 2.0    # ±2 degrees (was 0.5)
-  p_shear: 0.4         # NEW - most important (synthesizes scribe slant variation)
-  max_shear: 6         # degrees
+  p_rotate: 0.5        # Alignment variation
+  max_rotation: 2.0    # ±2 degrees
+  p_shear: 0.4         # Scribe slant variation (most important)
+  max_shear: 6         # ±6 degrees
+
+  # NEW: Document-condition augmentations (safe, match real degradation)
+
+  # Elastic deformation - simulates paper warping/curling (real physical issue)
+  # SAFE: Pure geometry, bicubic interpolation preserves faded ink
+  p_elastic: 0.3
+  elastic_alpha: 20       # Displacement strength (reduced from 25 for safety)
+  elastic_sigma: 6        # Smoothness (higher = gentler warping)
+  elastic_interpolation: "bicubic"  # CRITICAL - bilinear smears faded ink
+
+  # Color jitter - simulates paper color variance (brown→cream aging)
+  # Analysis shows: mean paper color variance = 27.9
+  # SUBTLE shifts only - docs already have stains/burns
+  p_color_jitter: 0.25     # Reduced from 0.3 (use sparingly)
+  hue_jitter: 0.03         # ±3% hue (was 0.05) - very subtle brown/cream shifts
+  saturation_jitter: 0.08  # ±8% saturation (was 0.1) - subtle aging variation
+  # NO brightness/contrast jitter - degrades quality
+
+  # Resolution jitter - prevents overfitting to fixed pixel budget
+  # Correct implementation: jitter max_pixels, not downscale→upscale blur
+  # CONSERVATIVE for degraded docs: only 15% reduction (not 30%)
+  p_resolution_jitter: 0.3
+  min_pixels_ratio: 0.85  # 85% of max_pixels (1,713,600) - SAFER for faded ink
+  max_pixels_ratio: 1.0   # 100% of max_pixels (2,016,000)
 
 inference:
   checkpoint: "outputs/qwen3-8b-full/best"
