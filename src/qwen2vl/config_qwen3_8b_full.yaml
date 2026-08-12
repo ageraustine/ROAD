@@ -94,46 +94,67 @@ training:
 
 augmentation:
   enabled: true  # Document-aware augmentation based on condition analysis
-  # ADAPTIVE AUGMENTATION: Strength automatically adjusts per document based on condition_score
-  # - Good condition (< 15): Aggressive augmentation (synthesize degradation)
-  # - Medium (15-25): Default settings (below)
-  # - Poor (> 25): Minimal augmentation (preserve readability)
 
-  # Quality-degrading augs DISABLED (docs already degraded)
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # ADAPTIVE AUGMENTATION STRATEGY (based on dataset analysis: 57% good, 29% medium, 13% poor)
+  # ═══════════════════════════════════════════════════════════════════════════════
+  #
+  # Good condition (<15, 57% of data):
+  #   - COMMON samples → standard augmentation
+  #   - Apply degradation simulation (blur, noise, color jitter) to synthesize variety
+  #   - Standard geometric augmentation
+  #
+  # Medium condition (15-25, 29% of data):
+  #   - COMMON samples → standard augmentation
+  #   - Moderate degradation + standard geometric
+  #
+  # Poor condition (>25, 13% of data - RARE!):
+  #   - RARE samples → INCREASE geometric diversity to prevent overfitting
+  #   - DISABLE degradation augmentation (already degraded - don't compound damage)
+  #   - INCREASE geometric augmentation by 1.5x (burnt/torn pages can still be scanned
+  #     at different angles, with different lens distortion, different resolutions!)
+  #
+  # CRITICAL INSIGHT: Separate DEGRADATION augs (blur, noise) from GEOMETRIC augs
+  # (rotation, warping, resolution). A burnt document can still be scanned crooked!
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  # DEGRADATION augmentations (disabled for poor-condition docs)
   p_blur: 0.0          # DISABLED - degrades quality
   p_noise: 0.0         # DISABLED - degrades quality (docs already grainy)
   p_brightness: 0.0    # DISABLED - degrades quality (docs already faded)
   p_contrast: 0.0      # DISABLED - degrades quality (changes pixel values)
 
-  # Geometric augs ENABLED - pure coordinate remaps, no quality loss
-  p_rotate: 0.5        # Alignment variation
+  # GEOMETRIC augmentations (INCREASED 1.5x for poor-condition docs)
+  # Pure coordinate remaps, no quality degradation
+  p_rotate: 0.5        # Alignment variation (×1.5 = 0.75 for poor docs)
   max_rotation: 2.0    # ±2 degrees
-  p_shear: 0.4         # Scribe slant variation (most important)
+  p_shear: 0.4         # Scribe slant variation (most important, NOT adaptive)
   max_shear: 6         # ±6 degrees
 
-  # NEW: Document-condition augmentations (safe, match real degradation)
-
-  # Elastic deformation - simulates paper warping/curling (real physical issue)
+  # Elastic deformation - simulates paper warping/curling during SCANNING
+  # CRITICAL: This is GEOMETRIC (how doc was scanned), NOT degradation!
+  # A burnt page can still curl during scanning → INCREASED for poor docs
   # SAFE: Pure geometry, bicubic interpolation preserves faded ink
-  p_elastic: 0.3
-  elastic_alpha: 20       # Displacement strength (reduced from 25 for safety)
-  elastic_sigma: 6        # Smoothness (higher = gentler warping)
+  p_elastic: 0.3       # Base probability (×1.5 = 0.45 for poor docs)
+  elastic_alpha: 20    # Displacement strength (×1.3 = 26 for poor docs)
+  elastic_sigma: 6     # Smoothness (higher = gentler warping)
   elastic_interpolation: "bicubic"  # CRITICAL - bilinear smears faded ink
 
-  # Color jitter - simulates paper color variance (brown→cream aging)
+  # DEGRADATION: Color jitter - simulates paper color variance (brown→cream aging)
   # Analysis shows: mean paper color variance = 27.9
-  # SUBTLE shifts only - docs already have stains/burns
-  p_color_jitter: 0.25     # Reduced from 0.3 (use sparingly)
-  hue_jitter: 0.03         # ±3% hue (was 0.05) - very subtle brown/cream shifts
-  saturation_jitter: 0.08  # ±8% saturation (was 0.1) - subtle aging variation
+  # DISABLED for poor docs (already discolored)
+  p_color_jitter: 0.25     # Base probability (×0.0 = DISABLED for poor docs)
+  hue_jitter: 0.03         # ±3% hue - very subtle brown/cream shifts
+  saturation_jitter: 0.08  # ±8% saturation - subtle aging variation
   # NO brightness/contrast jitter - degrades quality
 
-  # Resolution jitter - prevents overfitting to fixed pixel budget
+  # GEOMETRIC: Resolution jitter - prevents overfitting to fixed pixel budget
+  # Simulates different scan resolutions (independent of document damage!)
+  # INCREASED for poor docs (scan quality varies independently)
   # Correct implementation: jitter max_pixels, not downscale→upscale blur
-  # CONSERVATIVE for degraded docs: only 15% reduction (not 30%)
-  p_resolution_jitter: 0.3
-  min_pixels_ratio: 0.85  # 85% of max_pixels (1,713,600) - SAFER for faded ink
-  max_pixels_ratio: 1.0   # 100% of max_pixels (2,016,000)
+  p_resolution_jitter: 0.3  # Base probability (×1.2 = 0.36 for poor docs)
+  min_pixels_ratio: 0.85    # 85% of max_pixels for normal docs (×0.7 = 59.5% for poor docs - more variance)
+  max_pixels_ratio: 1.0     # 100% of max_pixels (2,016,000)
 
 inference:
   checkpoint: "outputs/qwen3-8b-full/best"

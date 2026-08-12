@@ -269,64 +269,103 @@ class ImageAugmenter:
         """
         Apply augmentation with optional adaptive strength based on document condition.
 
+        STRATEGY (based on dataset analysis: 57% good, 29% medium, 13% poor):
+
+        Good condition (< 15, 57% of data):
+            - COMMON samples → standard augmentation
+            - Add degradation simulation (blur, noise, color jitter)
+            - Standard geometric augmentation
+
+        Medium condition (15-25, 29% of data):
+            - COMMON samples → standard augmentation
+            - Moderate degradation simulation
+            - Standard geometric augmentation
+
+        Poor condition (> 25, 13% of data):
+            - RARE samples → INCREASE geometric diversity to prevent overfitting
+            - DISABLE degradation simulation (already degraded)
+            - INCREASE geometric augmentation (burnt pages can still be scanned at angles)
+
         Args:
             img: Input image
             condition_score: Optional document condition score (0-100, higher = worse)
-                - Good condition (< 15): More aggressive augmentation (synthesize degradation)
-                - Medium condition (15-25): Default augmentation
-                - Poor condition (> 25): Minimal augmentation (preserve readability)
         """
         if not self.enabled:
             return img
 
         # Adaptive augmentation based on document condition
         if condition_score is not None:
-            if condition_score < 15:  # Good condition - aggressive augmentation
-                p_elastic_mult = 1.3
-                p_resolution_mult = 1.0
-                min_pixels_override = 0.75  # Can downsample more
-                p_color_mult = 1.2
-                elastic_alpha_override = self.elastic_alpha * 1.2  # Stronger warping
-            elif condition_score < 25:  # Medium condition - default
+            if condition_score < 15:  # Good condition (57% of data) - aggressive augmentation
+                # Synthesize degradation + standard geometric
+                p_degradation_mult = 1.2  # Add blur, noise, color variance
                 p_elastic_mult = 1.0
                 p_resolution_mult = 1.0
+                p_rotation_mult = 1.0
+                min_pixels_override = 0.75  # Can downsample more
+                p_color_mult = 1.2
+                p_brightness_mult = 1.0
+                p_contrast_mult = 1.0
+                elastic_alpha_override = self.elastic_alpha
+            elif condition_score < 25:  # Medium condition (29% of data) - default
+                # Moderate degradation + standard geometric
+                p_degradation_mult = 1.0
+                p_elastic_mult = 1.0
+                p_resolution_mult = 1.0
+                p_rotation_mult = 1.0
                 min_pixels_override = self.min_pixels_ratio
                 p_color_mult = 1.0
+                p_brightness_mult = 1.0
+                p_contrast_mult = 1.0
                 elastic_alpha_override = self.elastic_alpha
-            else:  # Poor condition (>25) - minimal augmentation
-                p_elastic_mult = 0.65
-                p_resolution_mult = 0.5
-                min_pixels_override = 0.9  # Very conservative
-                p_color_mult = 0.4
-                elastic_alpha_override = self.elastic_alpha * 0.7  # Gentler warping
+            else:  # Poor condition (>25, 13% of data - RARE!) - NO degradation, MORE geometric
+                # CRITICAL: Poor images are rare (13%) and need MORE augmentation diversity
+                # to prevent overfitting, but don't compound existing degradation.
+                # A burnt/torn document can still be scanned at different angles/resolutions!
+                p_degradation_mult = 0.0  # DISABLE blur, noise, morphology, JPEG (already degraded)
+                p_elastic_mult = 1.5      # INCREASE warping (burnt pages can still curl)
+                p_resolution_mult = 1.2   # INCREASE resolution jitter (scan quality varies)
+                p_rotation_mult = 1.5     # INCREASE rotation (alignment varies)
+                min_pixels_override = 0.7  # Allow more aggressive downsampling
+                p_color_mult = 0.0        # DISABLE color jitter (already discolored)
+                p_brightness_mult = 0.6   # REDUCE brightness (careful with faded ink)
+                p_contrast_mult = 0.6     # REDUCE contrast (careful with faded ink)
+                elastic_alpha_override = self.elastic_alpha * 1.3  # Stronger warping
         else:
             # No condition score - use defaults
+            p_degradation_mult = 1.0
             p_elastic_mult = 1.0
             p_resolution_mult = 1.0
+            p_rotation_mult = 1.0
             min_pixels_override = self.min_pixels_ratio
             p_color_mult = 1.0
+            p_brightness_mult = 1.0
+            p_contrast_mult = 1.0
             elastic_alpha_override = self.elastic_alpha
 
-        if random.random() < self.p_blur:
+        # DEGRADATION augmentations (disabled for poor-condition docs)
+        if random.random() < (self.p_blur * p_degradation_mult):
             img = img.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.5, 1.5)))
 
-        if random.random() < self.p_brightness:
-            img = ImageEnhance.Brightness(img).enhance(random.uniform(0.8, 1.2))
-
-        if random.random() < self.p_contrast:
-            img = ImageEnhance.Contrast(img).enhance(random.uniform(0.8, 1.2))
-
-        if random.random() < self.p_rotate:
-            angle = random.uniform(-self.max_rotation, self.max_rotation)
-            img = img.rotate(angle, fillcolor=(255, 255, 255), expand=False)
-
-        if random.random() < self.p_noise:
+        if random.random() < (self.p_noise * p_degradation_mult):
             arr = np.array(img).astype(np.float32)
             arr += np.random.normal(0, random.uniform(5, 15), arr.shape)
             img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
-        # Morphological ops (models ink thickness, pen pressure, ink loading)
-        if random.random() < self.p_morphology:
+        # SCANNER-SETTING augmentations (reduced for poor-condition docs)
+        if random.random() < (self.p_brightness * p_brightness_mult):
+            img = ImageEnhance.Brightness(img).enhance(random.uniform(0.8, 1.2))
+
+        if random.random() < (self.p_contrast * p_contrast_mult):
+            img = ImageEnhance.Contrast(img).enhance(random.uniform(0.8, 1.2))
+
+        # GEOMETRIC augmentations (INCREASED for poor-condition docs)
+        if random.random() < (self.p_rotate * p_rotation_mult):
+            angle = random.uniform(-self.max_rotation, self.max_rotation)
+            img = img.rotate(angle, fillcolor=(255, 255, 255), expand=False)
+
+        # DEGRADATION: Morphological ops (models ink thickness, pen pressure)
+        # Disabled for poor-condition docs (ink already varied)
+        if random.random() < (self.p_morphology * p_degradation_mult):
             arr = np.array(img)
             kernel_size = random.choice([2, 3])
             kernel = np.ones((kernel_size, kernel_size), np.uint8)
@@ -341,7 +380,8 @@ class ImageAugmenter:
             arr = cv2.GaussianBlur(arr, (3, 3), 0.5)
             img = Image.fromarray(arr)
 
-        # Shear/slant jitter (models different scribe handwriting angles)
+        # GEOMETRIC: Shear/slant jitter (models different scribe handwriting angles)
+        # Keep enabled for all conditions (independent of document damage)
         if random.random() < self.p_shear:
             angle_deg = random.uniform(-self.max_shear, self.max_shear)
             angle_rad = np.deg2rad(angle_deg)
@@ -357,8 +397,9 @@ class ImageAugmenter:
                 resample=Image.BILINEAR
             )
 
-        # Resolution jitter (prevents overfitting to exact pixel budget)
-        if random.random() < self.p_resolution:
+        # DEGRADATION: OLD Resolution jitter (downscale→upscale blur)
+        # Disabled for poor-condition docs (already blurry)
+        if random.random() < (self.p_resolution * p_degradation_mult):
             w, h = img.size
             scale = random.uniform(0.6, 1.0)
             new_w, new_h = int(w * scale), int(h * scale)
@@ -367,29 +408,30 @@ class ImageAugmenter:
             img = img.resize((new_w, new_h), Image.BILINEAR)
             img = img.resize((w, h), Image.BILINEAR)
 
-        # JPEG artifacts (models scan compression)
-        if random.random() < self.p_jpeg:
+        # DEGRADATION: JPEG artifacts (models scan compression)
+        # Disabled for poor-condition docs (already have artifacts)
+        if random.random() < (self.p_jpeg * p_degradation_mult):
             buffer = BytesIO()
             quality = random.randint(60, 90)
             img.save(buffer, format='JPEG', quality=quality)
             buffer.seek(0)
             img = Image.open(buffer).convert('RGB')
 
-        # NEW: Elastic deformation (paper warping/curling)
-        # Based on document condition analysis - simulates physical paper deformation
-        # Adaptive: adjusted strength based on condition_score
+        # GEOMETRIC: Elastic deformation (paper warping/curling during scanning)
+        # INCREASED for poor-condition docs (burnt pages can still curl!)
+        # This simulates physical deformation during scanning, NOT document damage
         if random.random() < (self.p_elastic * p_elastic_mult):
             img = self._apply_elastic_transform(img, elastic_alpha_override)
 
-        # NEW: Color jitter (paper color variance - brown/cream aging)
+        # DEGRADATION: Color jitter (paper color variance - brown/cream aging)
+        # DISABLED for poor-condition docs (already discolored)
         # HUE/SATURATION ONLY - NO brightness/contrast (degrades quality)
-        # Adaptive: reduced probability for poor-condition docs
         if random.random() < (self.p_color_jitter * p_color_mult):
             img = self._apply_color_jitter(img)
 
-        # NEW: Resolution jitter (prevents overfitting to fixed pixel budget)
+        # GEOMETRIC: Resolution jitter (prevents overfitting to fixed pixel budget)
+        # INCREASED for poor-condition docs (scan quality varies independently of damage)
         # Proper implementation: jitter max_pixels, not downscale→upscale blur
-        # Adaptive: adjusted min_pixels based on condition_score
         if random.random() < (self.p_resolution_jitter * p_resolution_mult):
             img = self._apply_resolution_jitter(img, min_pixels_override)
 
