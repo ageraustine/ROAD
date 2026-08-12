@@ -89,7 +89,7 @@ training:
   early_stopping:
     enabled: true
     metric: "eval_score"  # FIXED: Watch same metric we optimize (eval_loss rises while CER/WER fall)
-    patience: 4  # With cer_samples=500, signal is stable enough for patience=4
+    patience: 5  # With cer_samples=500, signal is stable enough for patience=4
     min_delta: 0.0001  # Very small threshold - catches tiny improvements, avoids noise
 
 augmentation:
