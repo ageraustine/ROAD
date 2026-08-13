@@ -22,15 +22,14 @@ data:
   val_split: 0.1  # 90% train (~3,688), 10% val (~410)
   seed: 3407 # 42 or 3407 -- all previous runs used 42
 
-  # Fuzzy duplicate detection - Prevents train/val leakage from boilerplate templates
-  # Historical legal documents often share 90%+ text with only names/dates differing
-  # Example: "This Indenture made [DATE] between [NAMES]..." → 95% similarity
-  # Uses character 3-gram Jaccard similarity to group near-duplicates together
-  # Set to 0.0 to disable fuzzy matching (only exact duplicates detected)
-  fuzzy_duplicate_threshold: 0.85  # Recommended: 0.85-0.95 for historical legal docs
+  # Note: Duplicate-group awareness REMOVED for best model performance
+  # Reason: For OCR/HTR, same text with different handwriting is NOT leakage
+  #         - Model must visually READ each document (cannot memorize)
+  #         - Legal boilerplate learning is desirable (realistic for test set)
+  #         - Full 36-bin stratification > preventing 2% text overlap
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-single-textdiff-2"  # Single split with text difficulty stratification
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-single-textdiff-3"  # Single split with text difficulty stratification
 
   batch_size: 2
   eval_batch_size: 2

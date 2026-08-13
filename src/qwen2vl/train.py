@@ -1622,129 +1622,11 @@ def compute_avg_word_length(text: str) -> float:
     return sum(len(w) for w in words) / len(words)
 
 
-def compute_ngram_jaccard(text1: str, text2: str, n: int = 3) -> float:
-    """
-    Compute character n-gram Jaccard similarity between two texts.
-
-    Used for fuzzy boilerplate detection - historical legal documents often share
-    90%+ boilerplate with only names/dates differing (e.g., "This Indenture made
-    the [DATE] between [NAMES]...").
-
-    Args:
-        text1, text2: Texts to compare
-        n: N-gram size (default 3-char for historical text)
-
-    Returns:
-        Jaccard similarity (0.0 to 1.0)
-    """
-    if not text1 or not text2:
-        return 0.0
-
-    # Normalize: lowercase, strip whitespace
-    t1 = text1.lower().strip()
-    t2 = text2.lower().strip()
-
-    if t1 == t2:
-        return 1.0
-
-    # Generate character n-grams
-    def get_ngrams(text, n):
-        return set(text[i:i+n] for i in range(len(text) - n + 1))
-
-    ngrams1 = get_ngrams(t1, n)
-    ngrams2 = get_ngrams(t2, n)
-
-    if not ngrams1 or not ngrams2:
-        return 0.0
-
-    # Jaccard similarity: |A ∩ B| / |A ∪ B|
-    intersection = len(ngrams1 & ngrams2)
-    union = len(ngrams1 | ngrams2)
-
-    return intersection / union if union > 0 else 0.0
-
-
 def make_splits(df: pd.DataFrame, data_cfg: dict):
     """Yield (train_df, val_df, fold_num). Stratified by semantic text properties from ground truth. Grouped by group_col when present."""
     df = df.copy()
 
-    # STEP 1: Identify duplicate and near-duplicate texts to prevent train/val leakage
-    print("Checking for duplicate and near-duplicate texts (fuzzy boilerplate detection)...")
-    df["_text_clean"] = df["Target"].astype(str).str.lower().str.strip()
-
-    # REFINEMENT: Fuzzy duplicate detection using character n-gram Jaccard similarity
-    # Historical legal docs share 90%+ boilerplate with only names/dates differing
-    # Example: "This Indenture made [DATE] between [NAMES]..." → 95% similarity
-    # Config: data.fuzzy_duplicate_threshold (default 0.90, set to 0 to disable)
-    fuzzy_threshold = data_cfg.get("fuzzy_duplicate_threshold", 0.90)
-
-    # First pass: exact duplicates (fast)
-    text_counts = df["_text_clean"].value_counts()
-    exact_duplicates = text_counts[text_counts > 1]
-
-    # Initialize duplicate groups
-    df["_dup_group"] = -1  # -1 = not a duplicate
-    next_group_id = 0
-
-    # Group exact duplicates first
-    if len(exact_duplicates) > 0:
-        for dup_text in exact_duplicates.index:
-            df.loc[df["_text_clean"] == dup_text, "_dup_group"] = next_group_id
-            next_group_id += 1
-
-    exact_grouped = (df["_dup_group"] >= 0).sum()
-    print(f"  Exact matches: {len(exact_duplicates)} unique texts ({exact_grouped} samples)")
-
-    # Second pass: fuzzy duplicates (slower, O(n²) - only on ungrouped samples)
-    ungrouped_indices = df[df["_dup_group"] == -1].index.tolist()
-    fuzzy_grouped = 0
-
-    if len(ungrouped_indices) > 1 and fuzzy_threshold > 0:
-        print(f"  Scanning {len(ungrouped_indices)} ungrouped samples for fuzzy duplicates (threshold={fuzzy_threshold})...")
-
-        # Build list of ungrouped texts
-        ungrouped_texts = [(idx, df.loc[idx, "_text_clean"]) for idx in ungrouped_indices]
-
-        # Pairwise comparison (optimized: only compare each pair once)
-        for i in range(len(ungrouped_texts)):
-            idx_i, text_i = ungrouped_texts[i]
-
-            # Skip if already grouped
-            if df.loc[idx_i, "_dup_group"] >= 0:
-                continue
-
-            # Find all similar texts (including self)
-            similar_group = [idx_i]
-
-            for j in range(i + 1, len(ungrouped_texts)):
-                idx_j, text_j = ungrouped_texts[j]
-
-                # Skip if already grouped
-                if df.loc[idx_j, "_dup_group"] >= 0:
-                    continue
-
-                # Compute fuzzy similarity
-                similarity = compute_ngram_jaccard(text_i, text_j, n=3)
-
-                if similarity >= fuzzy_threshold:
-                    similar_group.append(idx_j)
-
-            # If found similar texts, create a new group
-            if len(similar_group) > 1:
-                for idx in similar_group:
-                    df.loc[idx, "_dup_group"] = next_group_id
-                next_group_id += 1
-                fuzzy_grouped += len(similar_group)
-
-        print(f"  Fuzzy matches: {fuzzy_grouped} samples grouped into {next_group_id - len(exact_duplicates)} boilerplate clusters")
-    else:
-        print(f"  Fuzzy matching disabled (threshold={fuzzy_threshold})")
-
-    total_grouped = (df["_dup_group"] >= 0).sum()
-    if total_grouped > 0:
-        print(f"  Total grouped: {total_grouped} samples ({exact_grouped} exact + {fuzzy_grouped} fuzzy)")
-
-    # STEP 2: Load text difficulty scores (pre-computed from analysis)
+    # STEP 1: Load text difficulty scores (pre-computed from analysis)
     text_difficulty_path = REPO_ROOT / "dataset" / "text_difficulty.csv"
 
     if text_difficulty_path.exists():
@@ -1847,10 +1729,7 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
     seed = data_cfg.get("seed", 42)
     group_col = data_cfg.get("group_col")
 
-    # Store original index for duplicate-aware splitting
-    df["_orig_idx"] = df.index
-
-    helper = ["_text_clean", "_dup_group", "_orig_idx", "_digit_density", "_uppercase_ratio", "_lexical_diversity",
+    helper = ["_digit_density", "_uppercase_ratio", "_lexical_diversity",
               "_special_char_density", "_avg_word_length", "_has_digit", "_has_upper", "_text_len",
               "_condition_bin", "_text_diff_bin", "_digit_bin", "_upper_bin", "_bin",
               "difficulty_score", "named_entity_score", "number_complexity"]
@@ -1859,39 +1738,20 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
         raise ValueError(f"group_col '{group_col}' not in the CSV columns")
 
     if k_folds > 1:
-        # K-fold with duplicate awareness
-        has_duplicates = (df["_dup_group"] >= 0).any()
-
-        if has_duplicates or group_col:
-            # Use StratifiedGroupKFold to keep duplicates together
+        # K-fold stratification
+        if group_col:
+            # Use StratifiedGroupKFold for document clustering
             if not GROUP_KFOLD_AVAILABLE:
-                raise RuntimeError("K-fold with duplicates needs scikit-learn >= 1.0 for StratifiedGroupKFold")
+                raise RuntimeError("K-fold with grouping needs scikit-learn >= 1.0 for StratifiedGroupKFold")
 
-            # Create synthetic group column combining duplicates + user group_col
-            if has_duplicates and group_col:
-                # Combine both: duplicate group + user-specified group
-                df["_fold_group"] = df["_dup_group"].astype(str) + "_" + df[group_col].astype(str)
-                print(f"K-fold with duplicate awareness + grouped on '{group_col}'")
-            elif has_duplicates:
-                # Use duplicate group as fold group
-                # Assign unique group ID to non-duplicates
-                max_dup_group = df["_dup_group"].max()
-                df["_fold_group"] = df.apply(
-                    lambda row: row["_dup_group"] if row["_dup_group"] >= 0 else max_dup_group + 1 + row.name,
-                    axis=1
-                )
-                print(f"K-fold with duplicate awareness (keeps {(df['_dup_group'] >= 0).sum()} duplicate samples together)")
-            else:
-                # Only user-specified group
-                df["_fold_group"] = df[group_col]
-                print(f"K-fold grouped on '{group_col}' ({df[group_col].nunique()} groups)")
-
+            df["_fold_group"] = df[group_col]
+            print(f"K-fold grouped on '{group_col}' ({df[group_col].nunique()} groups)")
             helper.append("_fold_group")
 
             splitter = StratifiedGroupKFold(n_splits=k_folds, shuffle=True, random_state=seed)
             split_iter = splitter.split(df, df["_bin"], groups=df["_fold_group"])
         else:
-            # Standard k-fold (no duplicates, no grouping)
+            # Standard stratified k-fold
             strat_desc = "condition (3) × difficulty (3) × digits (2) × names (2) = 36 bins" if has_condition else "difficulty (3) × digits (2) × names (2) = 12 bins"
             print(f"Stratified {k_folds}-fold: {strat_desc}")
             splitter = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=seed)
@@ -1901,42 +1761,15 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
             train_df = df.iloc[tr].copy()
             val_df = df.iloc[va].copy()
 
-            # Verify no duplicate leakage across folds
-            if has_duplicates:
-                train_texts = set(train_df["_text_clean"])
-                val_texts = set(val_df["_text_clean"])
-                leaked = train_texts & val_texts
-                if leaked:
-                    print(f"  ⚠️  Fold {fold_num}: {len(leaked)} duplicate texts leaked (should be 0)!")
-                else:
-                    print(f"  ✓ Fold {fold_num}: No duplicate leakage")
-
             yield (train_df.drop(columns=helper).copy(),
                    val_df.drop(columns=helper).copy(),
                    fold_num)
     else:
-        # STEP 3: Split with duplicate AND document cluster awareness
-        has_duplicates = (df["_dup_group"] >= 0).any()
-        has_groups = group_col is not None
-
-        if has_duplicates or has_groups:
-            # Create unified group column combining duplicates + user group_col
-            if has_duplicates and has_groups:
-                # Combine both: duplicate group + document cluster
-                df["_split_group"] = df["_dup_group"].astype(str) + "_" + df[group_col].astype(str)
-                print(f"Splitting with duplicate awareness + document clustering ('{group_col}')...")
-            elif has_duplicates:
-                # Only duplicates - assign unique group ID to non-duplicates
-                max_dup_group = df["_dup_group"].max()
-                df["_split_group"] = df.apply(
-                    lambda row: row["_dup_group"] if row["_dup_group"] >= 0 else max_dup_group + 1 + row.name,
-                    axis=1
-                )
-                print("Splitting with duplicate-group awareness (keeps duplicate texts together)...")
-            else:
-                # Only user group_col (document clusters)
-                df["_split_group"] = df[group_col]
-                print(f"Splitting with document clustering ('{group_col}': {df[group_col].nunique()} clusters)...")
+        # STEP 3: Single train/val split with optional document clustering
+        if group_col:
+            # Group-aware splitting (e.g., keep document pages together)
+            df["_split_group"] = df[group_col]
+            print(f"Splitting with document clustering ('{group_col}': {df[group_col].nunique()} clusters)...")
 
             helper.append("_split_group")
 
@@ -1949,60 +1782,87 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
             group_representatives = df.groupby("_split_group", as_index=False).first()
 
             # Split representatives with stratification
-            # Try full stratification, fall back if bins too small
+            # Hierarchical fallback optimized for BEST MODEL performance
+            # Priority: preserve BOTH condition + difficulty (critical for realistic validation)
             try:
+                # Level 1: Full 36-bin (condition × difficulty × digits × names)
                 split_train, split_val = train_test_split(
                     group_representatives,
                     test_size=data_cfg["val_split"],
                     stratify=group_representatives["_bin"],
                     random_state=seed
                 )
-                print(f"  ✓ Using full stratification (12 bins)")
+                print(f"  ✓ Full stratification: condition (3) × difficulty (3) × digits (2) × names (2) = 36 bins")
             except ValueError:
-                # Some bins have <2 samples after grouping - fall back to simpler stratification
-                print(f"  ⚠️  Full stratification failed (some bins too small after grouping)")
+                print(f"  ⚠️  Full 36-bin stratification failed (some bins too small after grouping)")
 
-                # Try medium fallback: condition × digits × names (12 bins)
-                if has_condition:
-                    try:
-                        group_representatives["_simple_bin"] = (
-                            group_representatives["_condition_bin"].astype(str) + "_" +
-                            group_representatives["_has_digit"].astype(str) + "_" +
-                            group_representatives["_has_upper"].astype(str)
-                        )
-                        split_train, split_val = train_test_split(
-                            group_representatives,
-                            test_size=data_cfg["val_split"],
-                            stratify=group_representatives["_simple_bin"],
-                            random_state=seed
-                        )
-                        print(f"  ✓ Using medium stratification: condition (3) × digits (2) × names (2) = 12 bins")
-                    except ValueError:
-                        # Still too small, fall back to minimal
-                        group_representatives["_simple_bin"] = (
-                            group_representatives["_has_digit"].astype(str) + "_" +
-                            group_representatives["_has_upper"].astype(str)
-                        )
-                        split_train, split_val = train_test_split(
-                            group_representatives,
-                            test_size=data_cfg["val_split"],
-                            stratify=group_representatives["_simple_bin"],
-                            random_state=seed
-                        )
-                        print(f"  ✓ Using minimal stratification: digits (2) × names (2) = 4 bins")
-                else:
-                    # No condition score, simplify to just has_digit × has_upper (4 bins)
-                    group_representatives["_simple_bin"] = (
-                        group_representatives["_has_digit"].astype(str) + "_" +
-                        group_representatives["_has_upper"].astype(str)
+                # Level 2: condition × difficulty (9 bins) - CRITICAL FALLBACK
+                # Preserves BOTH visual quality + linguistic complexity balance
+                try:
+                    group_representatives["_cond_diff_bin"] = (
+                        group_representatives["_condition_bin"].astype(str) + "_" +
+                        group_representatives["_text_diff_bin"].astype(str)
                     )
                     split_train, split_val = train_test_split(
                         group_representatives,
                         test_size=data_cfg["val_split"],
-                        stratify=group_representatives["_simple_bin"],
+                        stratify=group_representatives["_cond_diff_bin"],
                         random_state=seed
                     )
-                    print(f"  ✓ Using simplified stratification: digits (2) × names (2) = 4 bins")
+                    print(f"  ✓ Primary fallback: condition (3) × difficulty (3) = 9 bins [PRESERVES BOTH]")
+                except ValueError:
+                    # Level 3: condition × digits × names (12 bins) - visual quality + metadata
+                    if has_condition:
+                        try:
+                            group_representatives["_cond_meta_bin"] = (
+                                group_representatives["_condition_bin"].astype(str) + "_" +
+                                group_representatives["_has_digit"].astype(str) + "_" +
+                                group_representatives["_has_upper"].astype(str)
+                            )
+                            split_train, split_val = train_test_split(
+                                group_representatives,
+                                test_size=data_cfg["val_split"],
+                                stratify=group_representatives["_cond_meta_bin"],
+                                random_state=seed
+                            )
+                            print(f"  ✓ Secondary fallback: condition (3) × digits (2) × names (2) = 12 bins")
+                        except ValueError:
+                            # Level 4: condition only (3 bins) - preserve visual quality balance
+                            try:
+                                group_representatives["_cond_only_bin"] = group_representatives["_condition_bin"].astype(str)
+                                split_train, split_val = train_test_split(
+                                    group_representatives,
+                                    test_size=data_cfg["val_split"],
+                                    stratify=group_representatives["_cond_only_bin"],
+                                    random_state=seed
+                                )
+                                print(f"  ✓ Tertiary fallback: condition only (3 bins)")
+                            except ValueError:
+                                # Level 5: Minimal - digits × names (4 bins)
+                                group_representatives["_minimal_bin"] = (
+                                    group_representatives["_has_digit"].astype(str) + "_" +
+                                    group_representatives["_has_upper"].astype(str)
+                                )
+                                split_train, split_val = train_test_split(
+                                    group_representatives,
+                                    test_size=data_cfg["val_split"],
+                                    stratify=group_representatives["_minimal_bin"],
+                                    random_state=seed
+                                )
+                                print(f"  ✓ Minimal fallback: digits (2) × names (2) = 4 bins")
+                    else:
+                        # No condition score - use digits × names (4 bins)
+                        group_representatives["_minimal_bin"] = (
+                            group_representatives["_has_digit"].astype(str) + "_" +
+                            group_representatives["_has_upper"].astype(str)
+                        )
+                        split_train, split_val = train_test_split(
+                            group_representatives,
+                            test_size=data_cfg["val_split"],
+                            stratify=group_representatives["_minimal_bin"],
+                            random_state=seed
+                        )
+                        print(f"  ✓ Fallback: digits (2) × names (2) = 4 bins")
 
             # Now propagate: which groups went to train vs val?
             train_groups = set(split_train["_split_group"])
@@ -2015,28 +1875,18 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
             train_df = df[train_mask].copy()
             val_df = df[val_mask].copy()
 
-            # Verify no leakage (for duplicates)
-            if has_duplicates:
-                train_texts = set(train_df["_text_clean"])
-                val_texts = set(val_df["_text_clean"])
-                leaked = train_texts & val_texts
-                if leaked:
-                    print(f"  ⚠️  WARNING: {len(leaked)} texts still leaked (should be 0)!")
-                else:
-                    print(f"  ✓ No duplicate text leakage - all copies kept together")
-
-            # Verify group separation (for document clusters)
-            if has_groups:
-                train_clusters = set(train_df[group_col])
-                val_clusters = set(val_df[group_col])
-                leaked_clusters = train_clusters & val_clusters
-                if leaked_clusters:
-                    print(f"  ⚠️  WARNING: {len(leaked_clusters)} clusters leaked across train/val!")
-                else:
-                    print(f"  ✓ No cluster leakage - {len(train_clusters)} clusters in train, {len(val_clusters)} in val")
+            # Verify group separation
+            train_clusters = set(train_df[group_col])
+            val_clusters = set(val_df[group_col])
+            leaked_clusters = train_clusters & val_clusters
+            if leaked_clusters:
+                print(f"  ⚠️  WARNING: {len(leaked_clusters)} clusters leaked across train/val!")
+            else:
+                print(f"  ✓ No cluster leakage - {len(train_clusters)} clusters in train, {len(val_clusters)} in val")
 
         else:
-            # No duplicates or groups: standard stratified split
+            # Standard stratified split (no grouping)
+            print("Standard stratified split (no grouping)...")
             train_df, val_df = train_test_split(
                 df, test_size=data_cfg["val_split"], stratify=df["_bin"], random_state=seed
             )
