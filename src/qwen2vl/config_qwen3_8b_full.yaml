@@ -12,15 +12,25 @@ data:
   test_csv: "dataset/Test.csv"
   image_dir: "dataset/images"
 
-  # SINGLE SPLIT with TEXT DIFFICULTY stratification (analysis-driven)
-  # Stratifies by: text difficulty (3 bins) × digits (2) × names (2) = 12 bins
-  # Ensures train/val have same distribution of easy/medium/hard texts
+  # SINGLE SPLIT with VISUAL + TEXT DIFFICULTY stratification (analysis-driven)
+  # Stratifies by: condition (3) × text difficulty (3) × digits (2) × names (2) = 36 bins
+  # Ensures train/val have same distribution of:
+  #   - Visual degradation (pristine/moderate/poor documents)
+  #   - Text complexity (easy/medium/hard difficulty)
+  #   - Numbers and names (harder OCR challenges)
   k_folds: 1  # Single 90/10 split (more data than k-fold's 67%)
   val_split: 0.1  # 90% train (~3,688), 10% val (~410)
-  seed: 42
+  seed: 3407 # 42 or 3407 -- all previous runs used 42
+
+  # Fuzzy duplicate detection - Prevents train/val leakage from boilerplate templates
+  # Historical legal documents often share 90%+ text with only names/dates differing
+  # Example: "This Indenture made [DATE] between [NAMES]..." → 95% similarity
+  # Uses character 3-gram Jaccard similarity to group near-duplicates together
+  # Set to 0.0 to disable fuzzy matching (only exact duplicates detected)
+  fuzzy_duplicate_threshold: 0.85  # Recommended: 0.85-0.95 for historical legal docs
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-single-textdiff-1"  # Single split with text difficulty stratification
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-single-textdiff-2"  # Single split with text difficulty stratification
 
   batch_size: 2
   eval_batch_size: 2
@@ -97,35 +107,51 @@ augmentation:
 
   # ═══════════════════════════════════════════════════════════════════════════════
   # ADAPTIVE AUGMENTATION STRATEGY - 4-CLASS SYSTEM
-  # Thresholds: 15, 30, 40 (chosen to isolate rare extreme cases)
+  # Thresholds: 19, 37, 42 (updated 2026-08-13 after adding text_contrast)
   # ═══════════════════════════════════════════════════════════════════════════════
   #
-  # Dataset Distribution:
-  #   Excellent (<15):    2,349 samples (57%) - Common, pristine docs
-  #   Medium (15-30):     1,529 samples (37%) - Common, moderate degradation
-  #   Poor (30-40):         190 samples (5%)  - Rare, significant damage
-  #   Very Poor (>40):       30 samples (1%)  - Extremely rare outliers
+  # Dataset Distribution (after adding text_contrast detector):
+  #   Excellent (<19):      938 samples (22.9%) - Good condition + readable
+  #   Medium (19-37):     2,360 samples (57.6%) - Moderate degradation/fading
+  #   Poor (37-42):         414 samples (10.1%) - Significant damage/fading
+  #   Very Poor (>42):      386 samples (9.4%)  - Severe damage + faded text
+  #
+  # Condition score now based on 5 metrics (text_contrast ADDED):
+  #   - text_contrast (35% weight): CRITICAL - faded ink readability
+  #   - tears_and_holes (25% weight): Critical missing text
+  #   - paper_color_variance (20% weight): Paper uniformity
+  #   - texture_degradation (10% weight): Paper roughness
+  #   - stains (10% weight): Localized discoloration
+  #
+  # KEY INSIGHT: text_contrast detects faded ink that was previously missed
+  #   Documents with perfect paper but faded text were scored "excellent" (8-17)
+  #   and received FULL brightness/contrast jitter, making text WORSE.
+  #   Now properly detected and protected.
   #
   # Augmentation Strategy:
   #
-  #   Excellent (<15, 57%):
+  #   Excellent (<19, 22.9%):
+  #     - Good contrast text + clean paper
   #     - Synthesize degradation (blur, noise, color jitter 1.2x)
   #     - Standard geometric augmentation
-  #     → Goal: Add variety to common pristine samples
+  #     → Goal: Add variety to pristine, high-contrast samples
   #
-  #   Medium (15-30, 37%):
+  #   Medium (19-37, 57.6%):
+  #     - Moderate fading or moderate physical damage
   #     - Standard augmentation (all multipliers = 1.0)
   #     - Balanced degradation + geometric
   #
-  #   Poor (30-40, 5% - RARE!):
-  #     - DISABLE degradation (already damaged)
+  #   Poor (37-42, 10.1% - RARE!):
+  #     - Significant fading OR significant physical damage
+  #     - DISABLE degradation (already faded/damaged)
   #     - INCREASE geometric 1.5x (rotation, warping, resolution)
-  #     → Goal: Prevent overfitting to rare damaged samples
+  #     → Goal: Prevent overfitting, protect faded text from brightness jitter
   #
-  #   Very Poor (>40, 1% - EXTREME OUTLIERS!):
-  #     - DISABLE all degradation (already destroyed)
+  #   Very Poor (>42, 9.4% - RARE!):
+  #     - Severe fading + physical damage (worst cases)
+  #     - DISABLE all degradation (text barely visible)
   #     - MAXIMUM geometric 2.5x (aggressive warping, rotation, downsampling)
-  #     → Goal: Force model to generalize from 30 extreme cases
+  #     → Goal: Force model to generalize from extreme outliers
   #
   # CRITICAL INSIGHT: Separate DEGRADATION (blur, noise) from GEOMETRIC (rotation,
   # warping). A burnt document can still be scanned at different angles!
