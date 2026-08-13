@@ -1886,10 +1886,68 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
 
         else:
             # Standard stratified split (no grouping)
+            # Use hierarchical fallback to ensure robust stratification
             print("Standard stratified split (no grouping)...")
-            train_df, val_df = train_test_split(
-                df, test_size=data_cfg["val_split"], stratify=df["_bin"], random_state=seed
-            )
+
+            try:
+                # Level 1: Full 36-bin stratification
+                train_df, val_df = train_test_split(
+                    df, test_size=data_cfg["val_split"], stratify=df["_bin"], random_state=seed
+                )
+                print(f"  ✓ Full stratification: condition (3) × difficulty (3) × digits (2) × names (2) = 36 bins")
+            except ValueError:
+                print(f"  ⚠️  Full 36-bin stratification failed (some bins have <2 samples)")
+
+                # Level 2: condition × difficulty (9 bins)
+                try:
+                    df["_cond_diff_bin"] = (
+                        df["_condition_bin"].astype(str) + "_" +
+                        df["_text_diff_bin"].astype(str)
+                    )
+                    train_df, val_df = train_test_split(
+                        df, test_size=data_cfg["val_split"], stratify=df["_cond_diff_bin"], random_state=seed
+                    )
+                    print(f"  ✓ Primary fallback: condition (3) × difficulty (3) = 9 bins [PRESERVES BOTH]")
+                except ValueError:
+                    # Level 3: condition × digits × names (12 bins)
+                    if has_condition:
+                        try:
+                            df["_cond_meta_bin"] = (
+                                df["_condition_bin"].astype(str) + "_" +
+                                df["_has_digit"].astype(str) + "_" +
+                                df["_has_upper"].astype(str)
+                            )
+                            train_df, val_df = train_test_split(
+                                df, test_size=data_cfg["val_split"], stratify=df["_cond_meta_bin"], random_state=seed
+                            )
+                            print(f"  ✓ Secondary fallback: condition (3) × digits (2) × names (2) = 12 bins")
+                        except ValueError:
+                            # Level 4: condition only (3 bins)
+                            try:
+                                train_df, val_df = train_test_split(
+                                    df, test_size=data_cfg["val_split"], stratify=df["_condition_bin"], random_state=seed
+                                )
+                                print(f"  ✓ Tertiary fallback: condition only (3 bins)")
+                            except ValueError:
+                                # Level 5: digits × names (4 bins)
+                                df["_minimal_bin"] = (
+                                    df["_has_digit"].astype(str) + "_" +
+                                    df["_has_upper"].astype(str)
+                                )
+                                train_df, val_df = train_test_split(
+                                    df, test_size=data_cfg["val_split"], stratify=df["_minimal_bin"], random_state=seed
+                                )
+                                print(f"  ✓ Minimal fallback: digits (2) × names (2) = 4 bins")
+                    else:
+                        # No condition - fallback to digits × names
+                        df["_minimal_bin"] = (
+                            df["_has_digit"].astype(str) + "_" +
+                            df["_has_upper"].astype(str)
+                        )
+                        train_df, val_df = train_test_split(
+                            df, test_size=data_cfg["val_split"], stratify=df["_minimal_bin"], random_state=seed
+                        )
+                        print(f"  ✓ Fallback: digits (2) × names (2) = 4 bins")
 
         # Log distributions to verify stratification is working
         train_digits = train_df["_digit_density"]
