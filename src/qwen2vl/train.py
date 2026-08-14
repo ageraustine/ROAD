@@ -1381,11 +1381,27 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
 
     # Optional CER computation callback
     if train_cfg.get("compute_cer", True):
+        # Adaptive CER sample size: supports both absolute count and percentage
+        # - If cer_samples is float 0.0-1.0: percentage of val set (e.g., 1.0 = 100%)
+        # - If cer_samples is int: absolute count, capped at val_size
+        config_cer_samples = train_cfg.get("cer_samples", 200)
+        val_size = len(val_dataset)
+
+        if isinstance(config_cer_samples, float) and 0.0 <= config_cer_samples <= 1.0:
+            # Percentage mode: scale with val set size
+            adaptive_cer_samples = max(1, int(val_size * config_cer_samples))
+            print(f"  ⓘ CER samples: {config_cer_samples*100:.0f}% of val set = {adaptive_cer_samples} samples")
+        else:
+            # Absolute count mode: cap at val set size
+            adaptive_cer_samples = min(int(config_cer_samples), val_size)
+            if adaptive_cer_samples < config_cer_samples:
+                print(f"  ⓘ Adjusted cer_samples: {config_cer_samples} → {adaptive_cer_samples} (val set size)")
+
         callbacks.append(CERCallback(
             processor=processor,
             dataset=val_dataset,
             max_pixels=max_pixels,
-            n_samples=train_cfg.get("cer_samples", 200),
+            n_samples=adaptive_cer_samples,
             max_new_tokens=cfg.get("inference", {}).get("max_new_tokens", 256),
             batch_size=eval_bs,
             seed=data_cfg.get("seed", 42),

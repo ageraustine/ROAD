@@ -20,7 +20,7 @@ data:
   #   - Numbers and names (harder OCR challenges)
   k_folds: 1  # Single 90/10 split (more data than k-fold's 67%)
   val_split: 0.1  # 90% train (~3,688), 10% val (~410)
-  seed: 3407 # 42 or 3407 -- all previous runs used 42
+  seed: 42 # 42 or 3407 -- all previous runs used 42
 
   # Note: Duplicate-group awareness REMOVED for best model performance
   # Reason: For OCR/HTR, same text with different handwriting is NOT leakage
@@ -29,7 +29,7 @@ data:
   #         - Full 36-bin stratification > preventing 2% text overlap
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-single-textdiff-3"  # Single split with text difficulty stratification
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-seed42"  # Single split with text difficulty stratification
 
   batch_size: 2
   eval_batch_size: 2
@@ -87,8 +87,10 @@ training:
   num_workers: 8
   resume_from_checkpoint: true
 
-  # CER computation for early stopping (increased from 200 to reduce noise)
-  cer_samples: 500  # Use 500 samples for stable eval_score (37% of val set, low variance)
+  # CER computation for early stopping (ADAPTIVE: percentage or absolute count)
+  # - Float 0.0-1.0: percentage of val set (e.g., 1.0 = 100%, 0.5 = 50%)
+  # - Int: absolute count, capped at val_size (e.g., 500 → min(500, val_size))
+  cer_samples: 1.0  # Use full val set (auto-scales with val_split)
 
   # Quick-win regularizers (small dataset optimizations)
   label_smoothing_factor: 0.05  # Handle annotator inconsistency (prsence/presence, publique/public, etc)
@@ -98,7 +100,7 @@ training:
   early_stopping:
     enabled: true
     metric: "eval_score"  # FIXED: Watch same metric we optimize (eval_loss rises while CER/WER fall)
-    patience: 5  # With cer_samples=500, signal is stable enough for patience=4
+    patience: 5  # With cer_samples=1.0 (full val set), signal is stable for patience=5
     min_delta: 0.0001  # Very small threshold - catches tiny improvements, avoids noise
 
 augmentation:
