@@ -65,16 +65,27 @@ def detect_paper_color_variance(img_gray, img_rgb):
     Historical documents should have uniform paper color.
     High variance = damaged/stained paper = harder to process.
 
+    IMPROVED ALGORITHM (2026-08-14):
+    Now uses percentile-based background detection instead of Otsu for consistency
+    with other metrics. Robust to heavy staining.
+
     Returns:
         score: 0-100 (higher = more color variance = worse)
     """
     # Convert to LAB color space (better for color perception)
     img_lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB)
 
-    # Analyze background (non-text) regions
-    # Use Otsu to separate text from background
-    threshold_val = cv2.threshold(img_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0]
-    background_mask = img_gray >= threshold_val
+    # Percentile-based background detection (consistent with other metrics)
+    # Background: 30th-80th percentile (excludes text and white artifacts)
+    p30 = np.percentile(img_gray, 30)
+    p80 = np.percentile(img_gray, 80)
+    background_mask = (img_gray >= p30) & (img_gray <= p80)
+
+    if background_mask.sum() < (img_gray.size * 0.1):
+        # Fallback: wider range if too restrictive
+        p20 = np.percentile(img_gray, 20)
+        p90 = np.percentile(img_gray, 90)
+        background_mask = (img_gray >= p20) & (img_gray <= p90)
 
     if background_mask.sum() == 0:
         return 0.0
@@ -254,8 +265,41 @@ def detect_tears_and_holes(img_gray, img_rgb):
         kernel_size += 1
     morph_kernel = np.ones((kernel_size, kernel_size), np.uint8)
 
+    # IMPROVED FIX (2026-08-14): Multi-tier tear detection with strict brightness filter
+    # Previous approach: Required edges (too strict, missed actual tears)
+    # Challenge: Distinguish large tears from large color variation patches
+    #
+    # Tier 1: Edge-enhanced tears (high confidence)
+    # Any bright region with sharp edges (original logic)
+    edge_tears = candidate_mask & (edge_zones > 0)
+
+    # Tier 2: Large VERY bright regions without edges (medium confidence)
+    # Key insight: Real tears/holes are VERY bright (>230), not just relatively bright
+    # Paper color variation may be "brighter than average" but rarely >230
+    very_bright_mask = (img_gray > 230).astype(np.uint8)  # Absolute brightness threshold
+
+    no_edge_tears = (very_bright_mask & (edge_zones == 0)).astype(np.uint8)
+
+    # Remove small noise from tier 2 (more aggressive than tier 1)
+    large_kernel = np.ones((kernel_size * 2, kernel_size * 2), np.uint8)
+    no_edge_tears_cleaned = cv2.morphologyEx(no_edge_tears, cv2.MORPH_OPEN, large_kernel)
+
+    # Only keep large connected components from tier 2
+    num_components_t2, labels_t2, stats_t2, _ = cv2.connectedComponentsWithStats(
+        no_edge_tears_cleaned, connectivity=8
+    )
+    large_area_threshold = max(200, (h * w) // 2000)  # 0.05% of image
+
+    large_no_edge_tears = np.zeros_like(no_edge_tears)
+    for i in range(1, num_components_t2):
+        if stats_t2[i, cv2.CC_STAT_AREA] >= large_area_threshold:
+            large_no_edge_tears[labels_t2 == i] = 1
+
+    # Combine both tiers (edge tears + large very-bright non-edge tears)
+    final_candidate_mask = (edge_tears | large_no_edge_tears).astype(np.uint8)
+
     # Opening: removes small noise
-    cleaned_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_OPEN, morph_kernel)
+    cleaned_mask = cv2.morphologyEx(final_candidate_mask, cv2.MORPH_OPEN, morph_kernel)
 
     # STEP 5: Connected component analysis with shape features
     num_components, labels, stats, centroids = cv2.connectedComponentsWithStats(
@@ -335,77 +379,87 @@ def detect_tears_and_holes(img_gray, img_rgb):
 
 def detect_text_contrast(img_gray):
     """
-    Detect text-to-background contrast (faded ink).
+    Detect text-to-background contrast (faded ink) using EDGE-BASED measurement.
 
     Low contrast = faded/weak ink = hard for OCR to read.
     This is CRITICAL - a document can have perfect paper but unreadable faded text.
 
+    IMPROVED ALGORITHM (2026-08-14):
+    Previous approach used Otsu thresholding which FAILED on stained documents:
+    - Otsu separates white spots (1.8%) from stained paper+text (98.2%)
+    - Measures contrast between artifacts and bulk, not text readability
+    - Result: Readable text on stained background scored as "faded" (72/100)
+
+    NEW APPROACH - Edge gradient strength (robust to staining):
+    - Readable text has SHARP EDGES (high gradients) regardless of background color
+    - Faded text has SOFT EDGES (low gradients)
+    - Staining has smooth gradients (doesn't interfere)
+    - Measures actual text readability directly
+
     Algorithm:
-    - Separate text from background using Otsu threshold
-    - Measure mean brightness difference
-    - Normalize to 0-100 (inverted: low contrast = high score)
+    1. Compute gradient magnitude (Scharr operator for accuracy)
+    2. Focus on text regions (exclude brightest 10% - white spots/holes)
+    3. Measure 90th percentile gradient (strong text edges)
+    4. Normalize to 0-100 (low gradients = faded = high score)
 
     Returns:
-        score: 0-100 (higher = lower contrast = worse for OCR)
+        score: 0-100 (higher = weaker edges = faded text = worse for OCR)
     """
-    # Otsu threshold to separate text (dark) from background (light)
-    threshold_val = cv2.threshold(img_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0]
+    h, w = img_gray.shape
 
-    background_mask = img_gray >= threshold_val
-    text_mask = img_gray < threshold_val
+    # STEP 1: Compute gradient magnitude using Scharr (more accurate than Sobel)
+    # Scharr has better rotational symmetry and gradient magnitude estimation
+    grad_x = cv2.Scharr(img_gray, cv2.CV_64F, 1, 0)
+    grad_y = cv2.Scharr(img_gray, cv2.CV_64F, 0, 1)
+    gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
 
-    # Need sufficient pixels in both regions
-    if background_mask.sum() < (img_gray.size * 0.1) or text_mask.sum() < (img_gray.size * 0.05):
-        # Fallback: very unbalanced (mostly text or mostly background)
-        # Use percentiles instead
-        bg_pixels = img_gray[img_gray >= np.percentile(img_gray, 50)]
-        text_pixels = img_gray[img_gray < np.percentile(img_gray, 50)]
-    else:
-        bg_pixels = img_gray[background_mask]
-        text_pixels = img_gray[text_mask]
+    # STEP 2: Create mask to focus on document content (exclude white holes/spots)
+    # White artifacts (>90th percentile) are not text and skew gradient statistics
+    intensity_threshold = np.percentile(img_gray, 90)
+    content_mask = img_gray <= intensity_threshold
 
-    if len(bg_pixels) == 0 or len(text_pixels) == 0:
+    if content_mask.sum() < (img_gray.size * 0.1):
+        # Fallback: if >90% is bright (unusual), use all pixels
+        content_mask = np.ones_like(img_gray, dtype=bool)
+
+    # STEP 3: Extract gradient statistics in content region
+    content_gradients = gradient_magnitude[content_mask]
+
+    if len(content_gradients) == 0:
         return 50.0  # Neutral score if can't measure
 
-    # Mean brightness of background and text
-    bg_mean = bg_pixels.mean()
-    text_mean = text_pixels.mean()
+    # Use 90th percentile gradient as measure of text edge strength
+    # Why 90th percentile?
+    # - Mean/median too affected by large background areas (low gradients)
+    # - 95-99th can be noise/artifacts
+    # - 90th captures strong text edges reliably
+    strong_gradient = np.percentile(content_gradients, 90)
+    mean_gradient = content_gradients.mean()
 
-    # Contrast ratio: (background - text) / background
-    # Range: 0.0 (no contrast) to 1.0 (maximum contrast)
-    if bg_mean <= 0:
-        return 50.0
+    # STEP 4: Normalize to score (empirically calibrated on dataset)
+    # Calibration on 10 random images showed:
+    #   Median 90th-percentile gradient: ~1410 (sharp text)
+    #   Low range: 290-360 (readable but softer text)
+    #   Dataset range: 290-1576
 
-    contrast_ratio = (bg_mean - text_mean) / bg_mean
-    contrast_ratio = max(0.0, min(1.0, contrast_ratio))
+    # THRESHOLDS (empirically determined from dataset analysis):
+    # gradient >= 800: Excellent (very sharp text edges) → score 0-15
+    # gradient 400-800: Good (readable text) → score 15-35
+    # gradient 200-400: Low (faded/soft text) → score 35-65
+    # gradient < 200: Very low (severely faded) → score 65-100
 
-    # CRITICAL THRESHOLDS (empirically determined):
-    # 0.50+ = excellent contrast (easy to read)
-    # 0.35-0.50 = good contrast (readable)
-    # 0.20-0.35 = low contrast (faded, harder to read)
-    # <0.20 = very low contrast (severely faded, very hard to read)
-
-    # Invert and scale to 0-100 (low contrast = high score)
-    # Linear mapping:
-    # contrast 1.0 → score 0 (perfect contrast, no problem)
-    # contrast 0.5 → score 20 (good contrast, minor issue)
-    # contrast 0.35 → score 40 (threshold for concern)
-    # contrast 0.20 → score 70 (low contrast, major issue)
-    # contrast 0.0 → score 100 (no contrast, unreadable)
-
-    # Piecewise linear for better sensitivity in critical range
-    if contrast_ratio >= 0.50:
-        # Excellent contrast: score 0-20
-        score = (1.0 - contrast_ratio) / 0.5 * 20
-    elif contrast_ratio >= 0.35:
-        # Good contrast: score 20-40
-        score = 20 + (0.50 - contrast_ratio) / 0.15 * 20
-    elif contrast_ratio >= 0.20:
-        # Low contrast: score 40-70
-        score = 40 + (0.35 - contrast_ratio) / 0.15 * 30
+    if strong_gradient >= 800:
+        # Excellent contrast: score 0-15 (cap at 0 for very high gradients)
+        score = max(0, 15 - (strong_gradient - 800) * 0.01)
+    elif strong_gradient >= 400:
+        # Good contrast: score 15-35
+        score = 15 + (800 - strong_gradient) / 400 * 20
+    elif strong_gradient >= 200:
+        # Low contrast: score 35-65
+        score = 35 + (400 - strong_gradient) / 200 * 30
     else:
-        # Very low contrast: score 70-100
-        score = 70 + (0.20 - contrast_ratio) / 0.20 * 30
+        # Very low contrast: score 65-100
+        score = 65 + (200 - strong_gradient) / 200 * 35
 
     return min(100, max(0, score))
 
@@ -416,24 +470,47 @@ def detect_background_texture_degradation(img_gray):
 
     Degraded paper has high-frequency noise in background regions.
 
+    IMPROVED ALGORITHM (2026-08-14):
+    Previous approach used Otsu thresholding which FAILED on stained documents:
+    - Stained docs: Otsu separates white spots (1.8%) from stained paper+text (98.2%)
+    - Result: Measures texture in text/stain mixture, not actual paper background
+    - Example: hxcWILug6sySoYP7 scored 6.1 (excellent texture) but measuring wrong region
+
+    NEW APPROACH - Percentile-based background detection (robust to staining):
+    - Background: Top 50-80% of pixel intensities (bright paper, excluding white holes)
+    - Text: Bottom 30% of pixel intensities (dark ink)
+    - Middle 30-50%: Transition zone (edges, faded text) - excluded
+    - This works regardless of absolute brightness (aged brown paper vs white paper)
+
     Returns:
         score: 0-100 (higher = more degradation = worse)
     """
-    # Separate text from background
-    threshold_val = cv2.threshold(img_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0]
-    background_mask = img_gray >= threshold_val
+    # STEP 1: Percentile-based background detection
+    # Exclude brightest 20% (white holes/artifacts) and darkest 30% (text/stains)
+    p30 = np.percentile(img_gray, 30)  # Text threshold
+    p80 = np.percentile(img_gray, 80)  # Bright artifact threshold
+
+    # Background: pixels between 50th-80th percentile (paper region)
+    # This captures actual paper surface, excluding text and artifacts
+    background_mask = (img_gray >= p30) & (img_gray <= p80)
+
+    if background_mask.sum() < (img_gray.size * 0.1):
+        # Fallback: if <10% in target range, use wider range
+        p20 = np.percentile(img_gray, 20)
+        p90 = np.percentile(img_gray, 90)
+        background_mask = (img_gray >= p20) & (img_gray <= p90)
 
     if background_mask.sum() == 0:
         return 0.0
 
-    # Apply high-pass filter to detect texture noise
+    # STEP 2: Apply high-pass filter to detect texture noise
     # Gaussian blur to get low-frequency component
     blurred = cv2.GaussianBlur(img_gray, (5, 5), 0)
 
     # High-frequency component (texture)
     high_freq = cv2.absdiff(img_gray, blurred)
 
-    # Measure texture in background only
+    # STEP 3: Measure texture in background only
     bg_texture = high_freq[background_mask]
     texture_level = bg_texture.mean()
 
@@ -447,12 +524,14 @@ def detect_stains_and_watermarks(img_gray, img_rgb):
     """
     Detect stains, watermarks, and irregular discoloration.
 
-    IMPROVED ALGORITHM (2026-08-13):
-    - Local contrast analysis (not grid-based, misses localized stains)
-    - Adaptive thresholding relative to local background
+    IMPROVED ALGORITHM (2026-08-14):
+    - Percentile-based background detection (robust to heavy staining)
+    - Local contrast analysis for localized dark patches
     - Multi-scale stain detection (small spots vs large patches)
     - Non-saturating scoring
     - Color variance analysis (stains often have color tint)
+
+    Previous version used Otsu which could fail on heavily stained docs.
 
     Returns:
         score: 0-100 (higher = more staining = worse)
@@ -462,9 +541,17 @@ def detect_stains_and_watermarks(img_gray, img_rgb):
     if h < 50 or w < 50:
         return 0.0
 
-    # STEP 1: Separate background from text (adaptive)
-    threshold_val = cv2.threshold(img_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0]
-    background_mask = img_gray >= threshold_val
+    # STEP 1: Percentile-based background detection (robust to staining)
+    # Background: 30th-80th percentile (excludes text and white artifacts)
+    p30 = np.percentile(img_gray, 30)
+    p80 = np.percentile(img_gray, 80)
+    background_mask = (img_gray >= p30) & (img_gray <= p80)
+
+    if background_mask.sum() < (img_gray.size * 0.1):
+        # Fallback: wider range if too restrictive
+        p20 = np.percentile(img_gray, 20)
+        p90 = np.percentile(img_gray, 90)
+        background_mask = (img_gray >= p20) & (img_gray <= p90)
 
     if background_mask.sum() == 0:
         return 0.0

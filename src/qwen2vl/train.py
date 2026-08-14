@@ -325,93 +325,110 @@ class ImageAugmenter:
 
         return tuple(mean_color)
 
-    def __call__(self, img: Image.Image, condition_score: float = None) -> Image.Image:
+    def __call__(self, img: Image.Image, condition_metrics: dict = None) -> Image.Image:
         """
-        Apply augmentation with optional adaptive strength based on document condition.
+        Apply augmentation with field-specific adaptive strength based on document condition.
 
-        STRATEGY (4-class system based on dataset analysis):
-        Updated 2026-08-13 after adding text_contrast detector.
+        FIELD-SPECIFIC AUGMENTATION STRATEGY (2026-08-14):
+        ════════════════════════════════════════════════════════════════════════════════
 
-        Excellent condition (< 19, 50% of data):
-            - COMMON samples → aggressive augmentation
-            - Synthesize degradation (blur, noise, color jitter) to add variety
-            - Standard geometric augmentation
+        Previous approach used composite condition_score which could be MISLEADING:
+        Example: hxcWILug6sySoYP7.jpg had stains=44.1, condition_score=35.99 (POOR tier)
+                 → OLD system DISABLED brightness/contrast jitter (protecting "faded" text)
+                 → But text is SHARP and READABLE (text_contrast=47.4 after fixes)
+                 → Should ENABLE brightness jitter since text can handle it!
 
-        Medium condition (19-37, 35% of data):
-            - COMMON samples → standard augmentation
-            - Moderate degradation + standard geometric
+        Key insight from user: "A document can be heavily stained but still very readable"
+        → Composite scores conflate independent factors
+        → Each metric should control its relevant augmentation type
 
-        Poor condition (37-42, 12% of data):
-            - RARE samples → INCREASE geometric diversity to prevent overfitting
-            - DISABLE degradation simulation (already degraded/faded)
-            - INCREASE geometric augmentation 1.5x
+        FIELD-SPECIFIC CONTROL LOGIC (data-driven thresholds from percentiles):
+        ──────────────────────────────────────────────────────────────────────────────
+        | Metric               | Threshold | Percentile | Controls            | Action        |
+        |----------------------|-----------|------------|---------------------|---------------|
+        | text_contrast        | >44       | 80th (20%) | Brightness/contrast | DISABLE       |
+        | tears_and_holes      | >7        | 95th (5%)  | Geometric intensity | INCREASE 1.5× |
+        | stains               | >28       | 90th (10%) | Color jitter        | DISABLE       |
+        | paper_color_variance | >19       | 80th (20%) | Hue/sat jitter      | REDUCE 0.5×   |
+        | texture_degradation  | >18       | 90th (10%) | Blur/noise          | DISABLE       |
+        ──────────────────────────────────────────────────────────────────────────────
 
-        Very Poor condition (>42, 3% of data):
-            - RARE outliers → MAXIMUM geometric diversity
-            - DISABLE all degradation (already destroyed/severely faded)
-            - INCREASE geometric augmentation 2.5x (prevent memorization)
+        Rationale (thresholds chosen from distribution analysis):
+          - text_contrast >44 (80th %ile): Top 20% with faded text → protect from brightness jitter
+          - tears >7 (95th %ile): Top 5% with damage → increase geometric diversity (rare cases)
+          - stains >28 (90th %ile): Top 10% with heavy staining → skip color jitter (already varied)
+          - paper_var >19 (80th %ile): Top 20% with color variation → reduce hue/sat jitter
+          - texture >18 (90th %ile): Top 10% with rough paper → skip blur/noise (already noisy)
 
         Args:
             img: Input image
-            condition_score: Optional document condition score (0-100, higher = worse)
+            condition_metrics: Dict with {text_contrast, tears_and_holes, stains,
+                              paper_color_variance, texture_degradation}.
+                              If None, applies standard augmentation (all multipliers = 1.0)
         """
         if not self.enabled:
             return img
 
-        # Adaptive augmentation based on document condition (4 classes)
-        # Thresholds updated 2026-08-13 after adding text_contrast detector
-        if condition_score is not None:
-            if condition_score < 19:  # Excellent condition (50% of data)
-                # Synthesize degradation + standard geometric
-                p_degradation_mult = 1.2  # Add blur, noise, color variance
-                p_elastic_mult = 1.0
-                p_resolution_mult = 1.0
-                p_rotation_mult = 1.0
-                min_pixels_override = 0.75
-                p_color_mult = 1.2
-                p_brightness_mult = 1.0
-                p_contrast_mult = 1.0
-                elastic_alpha_override = self.elastic_alpha
+        # FIELD-SPECIFIC AUGMENTATION (replaces composite condition_score)
+        if condition_metrics is not None:
+            text_contrast = condition_metrics.get("text_contrast", 0)
+            tears = condition_metrics.get("tears_and_holes", 0)
+            stains = condition_metrics.get("stains", 0)
+            paper_var = condition_metrics.get("paper_color_variance", 0)
+            texture = condition_metrics.get("texture_degradation", 0)
 
-            elif condition_score < 37:  # Medium condition (35% of data)
-                # Standard augmentation
-                p_degradation_mult = 1.0
-                p_elastic_mult = 1.0
-                p_resolution_mult = 1.0
-                p_rotation_mult = 1.0
-                min_pixels_override = self.min_pixels_ratio
-                p_color_mult = 1.0
-                p_brightness_mult = 1.0
-                p_contrast_mult = 1.0
-                elastic_alpha_override = self.elastic_alpha
+            # 1. TEXT CONTRAST → Controls brightness/contrast jitter
+            #    Faded text (>44, 80th percentile, top 20%) cannot handle brightness changes
+            #    Distribution: mean=20.5, median=11.0, 80th=43.9
+            if text_contrast > 44:
+                p_brightness_mult = 0.0  # DISABLE (protect faded text)
+                p_contrast_mult = 0.0    # DISABLE (protect faded text)
+            else:
+                p_brightness_mult = 1.0  # Standard
+                p_contrast_mult = 1.0    # Standard
 
-            elif condition_score < 42:  # Poor condition (12% of data - RARE!)
-                # RARE: No degradation, MORE geometric (1.5x)
-                # Includes faded-text documents (high text_contrast score)
-                p_degradation_mult = 0.0  # Already degraded/faded
-                p_elastic_mult = 1.5      # More warping
-                p_resolution_mult = 1.5   # More resolution variance
-                p_rotation_mult = 1.5     # More rotation
-                min_pixels_override = 0.65
-                p_color_mult = 0.0        # Already discolored/faded
-                p_brightness_mult = 0.5   # Careful with faded ink
-                p_contrast_mult = 0.5     # Careful with faded ink
+            # 2. TEARS_AND_HOLES → Controls geometric augmentation intensity
+            #    Damaged docs (>7, 95th percentile, top 5%) are rare → increase diversity
+            #    Distribution: mean=2.2, median=0.0, 95th=7.3 (90% have 0.0 - no tears)
+            if tears > 7:
+                p_elastic_mult = 1.5      # INCREASE warping
+                p_rotation_mult = 1.5     # INCREASE rotation
+                p_resolution_mult = 1.5   # INCREASE resolution variance
+                min_pixels_override = 0.65  # More aggressive downsampling
                 elastic_alpha_override = self.elastic_alpha * 1.4
+            else:
+                p_elastic_mult = 1.0
+                p_rotation_mult = 1.0
+                p_resolution_mult = 1.0
+                min_pixels_override = self.min_pixels_ratio
+                elastic_alpha_override = self.elastic_alpha
 
-            else:  # Very Poor condition (>42, 3% of data - RARE!)
-                # RARE: Extreme outliers need MAXIMUM geometric diversity
-                # Severely faded text + physical damage
-                p_degradation_mult = 0.0  # Already destroyed/severely faded
-                p_elastic_mult = 2.5      # MAXIMUM warping (2.5x)
-                p_resolution_mult = 2.5   # MAXIMUM resolution variance
-                p_rotation_mult = 2.0     # MAXIMUM rotation
-                min_pixels_override = 0.5  # Aggressive downsampling OK
-                p_color_mult = 0.0        # Already discolored/faded
-                p_brightness_mult = 0.3   # Minimal (very faded)
-                p_contrast_mult = 0.3     # Minimal (very faded)
-                elastic_alpha_override = self.elastic_alpha * 1.8  # Strongest warping
+            # 3. STAINS → Controls color jitter
+            #    Heavy staining (>28, 90th percentile, top 10%) already has color variation
+            #    Distribution: mean=18.0, median=20.3, 90th=27.8
+            if stains > 28:
+                p_color_mult = 0.0  # DISABLE (already varied colors)
+            else:
+                p_color_mult = 1.0  # Standard
+
+            # 4. PAPER_COLOR_VARIANCE → Controls hue/sat jitter intensity
+            #    High variance (>19, 80th percentile, top 20%) already has diverse colors
+            #    Distribution: mean=14.3, median=12.0, 80th=19.2
+            if paper_var > 19:
+                hue_sat_mult = 0.5  # REDUCE (already varied)
+            else:
+                hue_sat_mult = 1.0  # Standard
+
+            # 5. TEXTURE_DEGRADATION → Controls blur/noise
+            #    Rough paper (>18, 90th percentile, top 10%) already has texture noise
+            #    Distribution: mean=13.1, median=12.8, 90th=17.8
+            if texture > 18:
+                p_degradation_mult = 0.0  # DISABLE blur/noise (already rough)
+            else:
+                p_degradation_mult = 1.0  # Standard
+
         else:
-            # No condition score - use defaults
+            # No condition metrics - use standard augmentation
             p_degradation_mult = 1.0
             p_elastic_mult = 1.0
             p_resolution_mult = 1.0
@@ -420,6 +437,7 @@ class ImageAugmenter:
             p_color_mult = 1.0
             p_brightness_mult = 1.0
             p_contrast_mult = 1.0
+            hue_sat_mult = 1.0
             elastic_alpha_override = self.elastic_alpha
 
         # DEGRADATION augmentations (disabled for poor-condition docs)
@@ -526,7 +544,7 @@ class ImageAugmenter:
         # DISABLED for poor-condition docs (already discolored)
         # HUE/SATURATION ONLY - NO brightness/contrast (degrades quality)
         if random.random() < (self.p_color_jitter * p_color_mult):
-            img = self._apply_color_jitter(img)
+            img = self._apply_color_jitter(img, hue_sat_mult)
 
         # GEOMETRIC: Resolution jitter (prevents overfitting to fixed pixel budget)
         # INCREASED for poor-condition docs (scan quality varies independently of damage)
@@ -572,7 +590,7 @@ class ImageAugmenter:
 
         return Image.fromarray(warped)
 
-    def _apply_color_jitter(self, img: Image.Image) -> Image.Image:
+    def _apply_color_jitter(self, img: Image.Image, hue_sat_mult: float = 1.0) -> Image.Image:
         """
         Apply color jitter (hue/saturation ONLY) to simulate paper color variance.
 
@@ -580,17 +598,22 @@ class ImageAugmenter:
         (brown → cream shifts from aging, different paper batches)
 
         IMPORTANT: NO brightness/contrast jitter - degrades already-faded docs
+
+        Args:
+            hue_sat_mult: Multiplier for hue/sat jitter intensity (0.5 for high paper_var docs)
         """
         # Convert to HSV for hue/saturation adjustment
         arr = np.array(img)
         hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV).astype(np.float32)
 
-        # Hue jitter (brown ↔ cream color shifts)
-        hue_shift = random.uniform(-self.hue_jitter, self.hue_jitter) * 180  # OpenCV hue is 0-180
+        # Hue jitter (brown ↔ cream color shifts) - scaled by hue_sat_mult
+        hue_range = self.hue_jitter * hue_sat_mult
+        hue_shift = random.uniform(-hue_range, hue_range) * 180  # OpenCV hue is 0-180
         hsv[:, :, 0] = np.clip(hsv[:, :, 0] + hue_shift, 0, 180)
 
-        # Saturation jitter (faded vs vibrant paper)
-        sat_factor = random.uniform(1 - self.saturation_jitter, 1 + self.saturation_jitter)
+        # Saturation jitter (faded vs vibrant paper) - scaled by hue_sat_mult
+        sat_range = self.saturation_jitter * hue_sat_mult
+        sat_factor = random.uniform(1 - sat_range, 1 + sat_range)
         hsv[:, :, 1] = np.clip(hsv[:, :, 1] * sat_factor, 0, 255)
 
         # Convert back to RGB
@@ -654,11 +677,14 @@ def build_dataset(df: pd.DataFrame, image_dir: Path, image_ext: str = ".jpg",
     """
     Build a HF dataset, reporting every dropped row rather than silently skipping.
 
-    Includes condition_score if available in df for adaptive augmentation.
+    Includes condition metrics if available in df for field-specific augmentation.
     """
     samples = []
     dropped = {"missing_image": 0, "empty_target": 0, "bad_id": 0}
-    has_condition = "condition_score" in df.columns
+    # Check if any condition metrics are available
+    has_condition = any(col in df.columns for col in
+                       ["text_contrast", "tears_and_holes", "stains",
+                        "paper_color_variance", "texture_degradation"])
 
     for _, row in tqdm(df.iterrows(), total=len(df),
                        desc=f"Building {split_name or 'dataset'}", leave=False):
@@ -685,11 +711,18 @@ def build_dataset(df: pd.DataFrame, image_dir: Path, image_ext: str = ".jpg",
 
         sample = {"id": img_id, "image_path": str(img_path), "text": target}
 
-        # Add condition score if available (for adaptive augmentation)
+        # Add condition metrics if available (for field-specific augmentation)
         if has_condition:
-            condition = row.get("condition_score")
-            if condition is not None and not pd.isna(condition):
-                sample["condition_score"] = float(condition)
+            # Load all individual metrics (not just composite score)
+            metrics = {}
+            for metric_name in ["text_contrast", "tears_and_holes", "stains",
+                               "paper_color_variance", "texture_degradation"]:
+                metric_val = row.get(metric_name)
+                if metric_val is not None and not pd.isna(metric_val):
+                    metrics[metric_name] = float(metric_val)
+
+            if metrics:  # Only add if at least one metric is available
+                sample["condition_metrics"] = metrics
 
         samples.append(sample)
 
@@ -745,9 +778,9 @@ class OCRCollator:
         for ex in examples:
             img = load_image(ex["image_path"], self.max_pixels)
             if self.augmenter is not None:
-                # Pass condition score for adaptive augmentation (if available)
-                condition_score = ex.get("condition_score", None)
-                img = self.augmenter(img, condition_score=condition_score)
+                # Pass condition metrics for field-specific augmentation (if available)
+                condition_metrics = ex.get("condition_metrics", None)
+                img = self.augmenter(img, condition_metrics=condition_metrics)
             images.append(img)
             texts.append(ex["text"])
 
@@ -2047,19 +2080,32 @@ def train(cfg: dict):
         condition_df = pd.read_csv(condition_csv)
         # Filter to successful analyses only
         condition_df = condition_df[condition_df["success"] == True]
-        # Merge condition scores
-        df = df.merge(condition_df[["ID", "condition_score"]], on="ID", how="left")
-        # Fill missing with median (for any images that failed analysis)
-        median_cond = df["condition_score"].median()
-        n_missing = df["condition_score"].isna().sum()
-        if n_missing > 0:
-            df.loc[df["condition_score"].isna(), "condition_score"] = median_cond
-        print(f"Loaded document condition scores from {condition_csv.name}")
-        print(f"  Mean: {df['condition_score'].mean():.1f}, Median: {median_cond:.1f}, Std: {df['condition_score'].std():.1f}")
-        if n_missing > 0:
-            print(f"  Filled {n_missing} missing values with median")
+
+        # Merge all condition metrics (field-specific augmentation)
+        metric_cols = ["text_contrast", "tears_and_holes", "stains",
+                      "paper_color_variance", "texture_degradation", "condition_score"]
+        available_cols = ["ID"] + [c for c in metric_cols if c in condition_df.columns]
+
+        df = df.merge(condition_df[available_cols], on="ID", how="left")
+
+        # Fill missing with median for each metric
+        n_missing_total = 0
+        for col in metric_cols:
+            if col in df.columns:
+                n_missing = df[col].isna().sum()
+                if n_missing > 0:
+                    median_val = df[col].median()
+                    df.loc[df[col].isna(), col] = median_val
+                    n_missing_total += n_missing
+
+        print(f"Loaded document condition metrics from {condition_csv.name}")
+        if "condition_score" in df.columns:
+            cond = df["condition_score"]
+            print(f"  Condition score: mean={cond.mean():.1f}, median={cond.median():.1f}, std={cond.std():.1f}")
+        if n_missing_total > 0:
+            print(f"  Filled {n_missing_total} missing values with median")
     else:
-        print(f"ℹ️  Document condition scores not found ({condition_csv.name}), proceeding without adaptive augmentation")
+        print(f"ℹ️  Document condition metrics not found ({condition_csv.name}), proceeding without adaptive augmentation")
 
     k_folds = data_cfg.get("k_folds", 1)
     n_folds = k_folds if k_folds > 1 else None

@@ -82,3 +82,5 @@ temp/
 # Cache
 .cache/
 *.cache
+
+gnn_flowstream/
