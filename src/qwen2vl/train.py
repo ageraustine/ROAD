@@ -1715,59 +1715,43 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
     df["_special_char_density"] = df["Target"].apply(compute_special_char_density)
     df["_avg_word_length"] = df["Target"].apply(compute_avg_word_length)
 
-    # STRATIFICATION STRATEGY (REFINEMENT 2026-08-13):
-    # Joint Visual-Linguistic Stratification to balance both text complexity AND visual degradation
-    # Previous: Text difficulty (3) × Digits (2) × Names (2) = 12 bins (text-only)
-    # Current: Condition (3) × Text difficulty (3) × Digits (2) × Names (2) = 36 bins (visual + text)
+    # STRATIFICATION STRATEGY (UPDATED 2026-08-14 for field-specific augmentation):
+    # TEXT-ONLY stratification: difficulty (3) × digits (2) × names (2) = 12 bins
+    #
+    # WHY TEXT-ONLY?
+    # With field-specific augmentation, each sample gets adaptive augmentation based on
+    # its OWN condition metrics (text_contrast, tears, stains, etc.). We don't need
+    # balanced train/val condition distributions anymore!
+    #
+    # Stratification should only balance TEXT DIFFICULTY (affects learning complexity):
+    # - Easy text: common words, simple structure → learns fast
+    # - Hard text: rare words, complex structure → learns slow
+    # - Digits/Names: not in language prior → need balanced representation
+    #
+    # Previous approach (condition × difficulty × digits × names = 36 bins) failed because
+    # some bins had <2 samples. Fell back to 9 bins (condition × difficulty), which worked
+    # but was unnecessarily complex and condition-dependent.
 
-    # 1. Visual condition bins (Good/Medium/Poor) - NEW!
-    has_condition = "condition_score" in df.columns and not df["condition_score"].isna().all()
-    if has_condition:
-        try:
-            # Bin by visual degradation: good (<20), medium (20-35), poor (>35)
-            # These thresholds match the adaptive augmentation tiers
-            df["_condition_bin"] = pd.qcut(
-                df["condition_score"],
-                q=3,
-                labels=["good_cond", "medium_cond", "poor_cond"],
-                duplicates="drop"
-            )
-            print(f"  ✓ Visual condition stratification enabled (3 bins)")
-        except ValueError:
-            # Fallback: use fixed bins if qcut fails
-            df["_condition_bin"] = pd.cut(
-                df["condition_score"],
-                bins=[0, 20, 35, 100],
-                labels=["good_cond", "medium_cond", "poor_cond"],
-                include_lowest=True
-            )
-            print(f"  ✓ Visual condition stratification enabled (3 fixed bins)")
-    else:
-        df["_condition_bin"] = "unknown_cond"
-        print(f"  ⚠️  No condition_score found - using text-only stratification")
-
-    # 2. Text difficulty bins (Easy/Medium/Hard)
+    # 1. Text difficulty bins (Easy/Medium/Hard)
     try:
         df["_text_diff_bin"] = pd.qcut(df["difficulty_score"], q=3, labels=["easy", "medium", "hard"], duplicates="drop")
     except ValueError:
         df["_text_diff_bin"] = "medium"
 
-    # 3. Has digits (binary: yes/no)
+    # 2. Has digits (binary: yes/no)
     df["_has_digit"] = df["Target"].str.contains(r"\d", regex=True, na=False)
     df["_digit_bin"] = df["_has_digit"].map({True: "has_nums", False: "no_nums"})
 
-    # 4. Has uppercase (binary: yes/no - indicates names)
+    # 3. Has uppercase (binary: yes/no - indicates names)
     df["_has_upper"] = df["Target"].str.contains(r"[A-Z]", regex=True, na=False)
     df["_upper_bin"] = df["_has_upper"].map({True: "has_names", False: "no_names"})
 
-    # Combine: condition (3) × text_difficulty (3) × digits (2) × names (2) = 36 bins
+    # Combine: text_difficulty (3) × digits (2) × names (2) = 12 bins
     # Ensures train and val have balanced distributions across:
-    # - Visual degradation (good/medium/poor condition documents)
     # - Text complexity (easy/medium/hard difficulty)
     # - Numbers (harder to transcribe, not in language prior)
     # - Names (not in language prior, require visual fidelity)
-    df["_bin"] = (df["_condition_bin"].astype(str) + "_" +
-                  df["_text_diff_bin"].astype(str) + "_" +
+    df["_bin"] = (df["_text_diff_bin"].astype(str) + "_" +
                   df["_digit_bin"].astype(str) + "_" +
                   df["_upper_bin"].astype(str))
 
@@ -1780,7 +1764,7 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
 
     helper = ["_digit_density", "_uppercase_ratio", "_lexical_diversity",
               "_special_char_density", "_avg_word_length", "_has_digit", "_has_upper", "_text_len",
-              "_condition_bin", "_text_diff_bin", "_digit_bin", "_upper_bin", "_bin",
+              "_text_diff_bin", "_digit_bin", "_upper_bin", "_bin",
               "difficulty_score", "named_entity_score", "number_complexity"]
 
     if group_col and group_col not in df.columns:
@@ -1841,66 +1825,22 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
                     stratify=group_representatives["_bin"],
                     random_state=seed
                 )
-                print(f"  ✓ Full stratification: condition (3) × difficulty (3) × digits (2) × names (2) = 36 bins")
+                print(f"  ✓ Full stratification: difficulty (3) × digits (2) × names (2) = 12 bins")
             except ValueError:
-                print(f"  ⚠️  Full 36-bin stratification failed (some bins too small after grouping)")
+                print(f"  ⚠️  Full 12-bin stratification failed (some bins too small after grouping)")
 
-                # Level 2: condition × difficulty (9 bins) - CRITICAL FALLBACK
-                # Preserves BOTH visual quality + linguistic complexity balance
+                # Level 2: difficulty only (3 bins)
                 try:
-                    group_representatives["_cond_diff_bin"] = (
-                        group_representatives["_condition_bin"].astype(str) + "_" +
-                        group_representatives["_text_diff_bin"].astype(str)
-                    )
                     split_train, split_val = train_test_split(
                         group_representatives,
                         test_size=data_cfg["val_split"],
-                        stratify=group_representatives["_cond_diff_bin"],
+                        stratify=group_representatives["_text_diff_bin"],
                         random_state=seed
                     )
-                    print(f"  ✓ Primary fallback: condition (3) × difficulty (3) = 9 bins [PRESERVES BOTH]")
+                    print(f"  ✓ Primary fallback: difficulty (3) bins")
                 except ValueError:
-                    # Level 3: condition × digits × names (12 bins) - visual quality + metadata
-                    if has_condition:
-                        try:
-                            group_representatives["_cond_meta_bin"] = (
-                                group_representatives["_condition_bin"].astype(str) + "_" +
-                                group_representatives["_has_digit"].astype(str) + "_" +
-                                group_representatives["_has_upper"].astype(str)
-                            )
-                            split_train, split_val = train_test_split(
-                                group_representatives,
-                                test_size=data_cfg["val_split"],
-                                stratify=group_representatives["_cond_meta_bin"],
-                                random_state=seed
-                            )
-                            print(f"  ✓ Secondary fallback: condition (3) × digits (2) × names (2) = 12 bins")
-                        except ValueError:
-                            # Level 4: condition only (3 bins) - preserve visual quality balance
-                            try:
-                                group_representatives["_cond_only_bin"] = group_representatives["_condition_bin"].astype(str)
-                                split_train, split_val = train_test_split(
-                                    group_representatives,
-                                    test_size=data_cfg["val_split"],
-                                    stratify=group_representatives["_cond_only_bin"],
-                                    random_state=seed
-                                )
-                                print(f"  ✓ Tertiary fallback: condition only (3 bins)")
-                            except ValueError:
-                                # Level 5: Minimal - digits × names (4 bins)
-                                group_representatives["_minimal_bin"] = (
-                                    group_representatives["_has_digit"].astype(str) + "_" +
-                                    group_representatives["_has_upper"].astype(str)
-                                )
-                                split_train, split_val = train_test_split(
-                                    group_representatives,
-                                    test_size=data_cfg["val_split"],
-                                    stratify=group_representatives["_minimal_bin"],
-                                    random_state=seed
-                                )
-                                print(f"  ✓ Minimal fallback: digits (2) × names (2) = 4 bins")
-                    else:
-                        # No condition score - use digits × names (4 bins)
+                    # Level 3: digits × names (4 bins)
+                    try:
                         group_representatives["_minimal_bin"] = (
                             group_representatives["_has_digit"].astype(str) + "_" +
                             group_representatives["_has_upper"].astype(str)
@@ -1911,7 +1851,15 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
                             stratify=group_representatives["_minimal_bin"],
                             random_state=seed
                         )
-                        print(f"  ✓ Fallback: digits (2) × names (2) = 4 bins")
+                        print(f"  ✓ Secondary fallback: digits (2) × names (2) = 4 bins")
+                    except ValueError:
+                        # Level 4: Final fallback - no stratification
+                        print(f"  ⚠️  All stratification failed - using random split")
+                        split_train, split_val = train_test_split(
+                            group_representatives,
+                            test_size=data_cfg["val_split"],
+                            random_state=seed
+                        )
 
             # Now propagate: which groups went to train vs val?
             train_groups = set(split_train["_split_group"])
@@ -1939,56 +1887,23 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
             print("Standard stratified split (no grouping)...")
 
             try:
-                # Level 1: Full 36-bin stratification
+                # Level 1: Full 12-bin stratification (text-only)
                 train_df, val_df = train_test_split(
                     df, test_size=data_cfg["val_split"], stratify=df["_bin"], random_state=seed
                 )
-                print(f"  ✓ Full stratification: condition (3) × difficulty (3) × digits (2) × names (2) = 36 bins")
+                print(f"  ✓ Full stratification: difficulty (3) × digits (2) × names (2) = 12 bins")
             except ValueError:
-                print(f"  ⚠️  Full 36-bin stratification failed (some bins have <2 samples)")
+                print(f"  ⚠️  Full 12-bin stratification failed (some bins have <2 samples)")
 
-                # Level 2: condition × difficulty (9 bins)
+                # Level 2: difficulty only (3 bins)
                 try:
-                    df["_cond_diff_bin"] = (
-                        df["_condition_bin"].astype(str) + "_" +
-                        df["_text_diff_bin"].astype(str)
-                    )
                     train_df, val_df = train_test_split(
-                        df, test_size=data_cfg["val_split"], stratify=df["_cond_diff_bin"], random_state=seed
+                        df, test_size=data_cfg["val_split"], stratify=df["_text_diff_bin"], random_state=seed
                     )
-                    print(f"  ✓ Primary fallback: condition (3) × difficulty (3) = 9 bins [PRESERVES BOTH]")
+                    print(f"  ✓ Primary fallback: difficulty (3) bins")
                 except ValueError:
-                    # Level 3: condition × digits × names (12 bins)
-                    if has_condition:
-                        try:
-                            df["_cond_meta_bin"] = (
-                                df["_condition_bin"].astype(str) + "_" +
-                                df["_has_digit"].astype(str) + "_" +
-                                df["_has_upper"].astype(str)
-                            )
-                            train_df, val_df = train_test_split(
-                                df, test_size=data_cfg["val_split"], stratify=df["_cond_meta_bin"], random_state=seed
-                            )
-                            print(f"  ✓ Secondary fallback: condition (3) × digits (2) × names (2) = 12 bins")
-                        except ValueError:
-                            # Level 4: condition only (3 bins)
-                            try:
-                                train_df, val_df = train_test_split(
-                                    df, test_size=data_cfg["val_split"], stratify=df["_condition_bin"], random_state=seed
-                                )
-                                print(f"  ✓ Tertiary fallback: condition only (3 bins)")
-                            except ValueError:
-                                # Level 5: digits × names (4 bins)
-                                df["_minimal_bin"] = (
-                                    df["_has_digit"].astype(str) + "_" +
-                                    df["_has_upper"].astype(str)
-                                )
-                                train_df, val_df = train_test_split(
-                                    df, test_size=data_cfg["val_split"], stratify=df["_minimal_bin"], random_state=seed
-                                )
-                                print(f"  ✓ Minimal fallback: digits (2) × names (2) = 4 bins")
-                    else:
-                        # No condition - fallback to digits × names
+                    # Level 3: digits × names (4 bins)
+                    try:
                         df["_minimal_bin"] = (
                             df["_has_digit"].astype(str) + "_" +
                             df["_has_upper"].astype(str)
@@ -1996,7 +1911,13 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
                         train_df, val_df = train_test_split(
                             df, test_size=data_cfg["val_split"], stratify=df["_minimal_bin"], random_state=seed
                         )
-                        print(f"  ✓ Fallback: digits (2) × names (2) = 4 bins")
+                        print(f"  ✓ Secondary fallback: digits (2) × names (2) = 4 bins")
+                    except ValueError:
+                        # Level 4: Final fallback - no stratification
+                        print(f"  ⚠️  All stratification failed - using random split")
+                        train_df, val_df = train_test_split(
+                            df, test_size=data_cfg["val_split"], random_state=seed
+                        )
 
         # Log distributions to verify stratification is working
         train_digits = train_df["_digit_density"]
@@ -2014,30 +1935,14 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
         train_diff = train_df.get("difficulty_score", train_df["_lexical_diversity"])
         val_diff = val_df.get("difficulty_score", val_df["_lexical_diversity"])
 
-        # Get condition scores for logging (if available)
-        has_condition_logging = "condition_score" in train_df.columns and not train_df["condition_score"].isna().all()
-
-        strat_desc = "condition (3) × difficulty (3) × digits (2) × names (2) = 36 bins" if has_condition else "difficulty (3) × digits (2) × names (2) = 12 bins"
-        print(f"Stratified split: {strat_desc}")
+        print(f"Stratified split: difficulty (3) × digits (2) × names (2) = 12 bins (text-only)")
         print(f"  Train: {len(train_df)} samples")
-
-        # Visual condition distribution
-        if has_condition_logging:
-            train_cond = train_df["condition_score"]
-            print(f"    Visual condition: min={train_cond.min():.1f}, median={train_cond.median():.1f}, max={train_cond.max():.1f}")
-
         print(f"    Text difficulty: min={train_diff.min():.1f}, median={train_diff.median():.1f}, max={train_diff.max():.1f}")
         print(f"    Digit density: min={train_digits.min():.3f}, median={train_digits.median():.3f}, max={train_digits.max():.3f}")
         print(f"    Uppercase ratio: min={train_upper.min():.3f}, median={train_upper.median():.3f}, max={train_upper.max():.3f}")
         print(f"    Lexical diversity: min={train_lex.min():.3f}, median={train_lex.median():.3f}, max={train_lex.max():.3f}")
         print(f"    Text length: min={train_df['_text_len'].min()}, median={train_df['_text_len'].median():.0f}, max={train_df['_text_len'].max()}")
         print(f"  Val:   {len(val_df)} samples")
-
-        # Visual condition distribution
-        if has_condition_logging:
-            val_cond = val_df["condition_score"]
-            print(f"    Visual condition: min={val_cond.min():.1f}, median={val_cond.median():.1f}, max={val_cond.max():.1f}")
-
         print(f"    Text difficulty: min={val_diff.min():.1f}, median={val_diff.median():.1f}, max={val_diff.max():.1f}")
         print(f"    Digit density: min={val_digits.min():.3f}, median={val_digits.median():.3f}, max={val_digits.max():.3f}")
         print(f"    Uppercase ratio: min={val_upper.min():.3f}, median={val_upper.median():.3f}, max={val_upper.max():.3f}")
