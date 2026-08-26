@@ -29,7 +29,7 @@ data:
   #         - Full 36-bin stratification > preventing 2% text overlap
 
 training:
-  output_dir: "outputs/qwen3-8b-full"  # was a /content/drive/... Colab path - doesn't exist on RunPod
+  output_dir: "outputs/qwen3-8b-full_2"  # was a /content/drive/... Colab path - doesn't exist on RunPod
 
   batch_size: 2
   eval_batch_size: 2
@@ -111,7 +111,7 @@ training:
   # CER computation for early stopping (ADAPTIVE: percentage or absolute count)
   # - Float 0.0-1.0: percentage of val set (e.g., 1.0 = 100%, 0.5 = 50%)
   # - Int: absolute count, capped at val_size (e.g., 500 → min(500, val_size))
-  cer_samples: 0.5  # Use full val set (auto-scales with val_split)
+  cer_samples: 1 # Use full val set (auto-scales with val_split)
 
   # Quick-win regularizers (small dataset optimizations)
   label_smoothing_factor: 0.05  # Handle annotator inconsistency (prsence/presence, publique/public, etc)

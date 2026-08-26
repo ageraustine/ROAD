@@ -1381,6 +1381,13 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
         weight_decay=train_cfg["weight_decay"],
         max_grad_norm=train_cfg["max_grad_norm"],
         bf16=True,
+        # Both were previously in configs but never wired here - confirmed dead
+        # keys. label_smoothing_factor helps with annotator spelling
+        # inconsistency; neftune_noise_alpha is proven on small SFT datasets.
+        # supported_kwargs() below drops these harmlessly on transformers
+        # versions where either field doesn't exist.
+        label_smoothing_factor=train_cfg.get("label_smoothing_factor", 0.0),
+        neftune_noise_alpha=train_cfg.get("neftune_noise_alpha", None),
         logging_steps=log_steps,
         logging_strategy="steps",
         logging_first_step=False,
