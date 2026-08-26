@@ -75,6 +75,15 @@ training:
   lora_modules_to_save: null  # Merger covered in target_modules regex
 
   max_pixels: 2016000
+  # At Qwen3-VL's 32x spatial compression, max_pixels alone produces ~1,969
+  # vision tokens. The default max_seq_length (2048, unset until now) left
+  # under 80 tokens for prompt + assistant header + target text combined,
+  # causing truncation to cut off the assistant header on longer samples -
+  # the "Could not locate the assistant header" crash. Sized with real
+  # headroom instead of shrinking max_pixels (which would cost legibility
+  # on faded/small handwriting - the thing the augmentation strategy above
+  # is specifically protecting).
+  max_seq_length: 2560
 
   eval_steps: 50
   save_steps: 50
