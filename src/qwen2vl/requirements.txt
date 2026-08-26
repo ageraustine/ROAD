@@ -1,11 +1,11 @@
 # Core
-torch>=2.1.0
+torch
 torchvision
-transformers>=4.40.0
-accelerate>=0.27.0
+transformers
+accelerate
 
 # LoRA fine-tuning
-peft>=0.10.0
+peft
 
 # Flash Attention (A100 optimized)
 # Note: For Colab, use pre-built wheels in notebook for faster install
