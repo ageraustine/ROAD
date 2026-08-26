@@ -70,9 +70,27 @@ TF_MAJOR = int(transformers.__version__.split(".")[0])
 SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 
+SYSTEM_PROMPT = (
+    "You are an expert paleographer specializing in 17th-century English "
+    "secretary hand, particularly colonial legal and notarial documents "
+    "(deeds, bonds, and related instruments) from Barbados. You are skilled "
+    "at reading period handwriting and reproducing period-accurate spelling, "
+    "punctuation, and scribal abbreviations exactly as written, without "
+    "modernizing or standardizing the text."
+)
+
 OCR_PROMPT = (
     "Transcribe the handwritten text in this image exactly as written. "
-    "Preserve spelling, punctuation, and line breaks. Output only the transcription."
+    "Preserve original archaic spelling, capitalization, and punctuation - "
+    "do not modernize or standardize the text.\n\n"
+    "Specific conventions to preserve exactly:\n"
+    "- Superscript abbreviations: write a caret before the superscript letters, "
+    "e.g. \"w^ch\" (which), \"s^d\" (said), \"m^r\" (master), \"25^th\" (25th).\n"
+    "- Keep \"&\" as \"&\" - do not expand it to \"and\".\n"
+    "- Preserve both Arabic numerals (1674) and Roman numerals (xvi) exactly as "
+    "written - do not convert between them.\n"
+    "- If a tilde (~) appears in the source, reproduce it as written.\n\n"
+    "Output only the transcription, with no additional commentary."
 )
 
 ASSISTANT_HEADER = "<|im_start|>assistant\n"
@@ -794,6 +812,7 @@ class OCRCollator:
 
         messages_batch = [
             [
+                {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
                 {"role": "user", "content": [
                     {"type": "image", "image": img},
                     {"type": "text", "text": OCR_PROMPT},
@@ -1009,7 +1028,8 @@ class CERCallback(TrainerCallback):
 
                 prompts = [
                     self.processor.apply_chat_template(
-                        [{"role": "user", "content": [
+                        [{"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+                         {"role": "user", "content": [
                             {"type": "image", "image": img},
                             {"type": "text", "text": OCR_PROMPT},
                         ]}],
