@@ -97,8 +97,8 @@ training:
   # trade-off was avoided deliberately.
   max_seq_length: 3584
 
-  eval_steps: 100
-  save_steps: 100
+  eval_steps: 50
+  save_steps: 50
   save_total_limit: 3
 
   # Compute CER+WER for monitoring (competition metric)
@@ -111,7 +111,7 @@ training:
   # CER computation for early stopping (ADAPTIVE: percentage or absolute count)
   # - Float 0.0-1.0: percentage of val set (e.g., 1.0 = 100%, 0.5 = 50%)
   # - Int: absolute count, capped at val_size (e.g., 500 → min(500, val_size))
-  cer_samples: 1 # Use full val set (auto-scales with val_split)
+  cer_samples: 1.0  # Use full val set (auto-scales with val_split)
 
   # Quick-win regularizers (small dataset optimizations)
   label_smoothing_factor: 0.05  # Handle annotator inconsistency (prsence/presence, publique/public, etc)
@@ -179,11 +179,18 @@ augmentation:
   # warping). A burnt document can still be scanned at different angles!
   # ═══════════════════════════════════════════════════════════════════════════════
 
-  # DEGRADATION augmentations (disabled for poor-condition docs)
-  p_blur: 0.0          # DISABLED - degrades quality
-  p_noise: 0.0         # DISABLED - degrades quality (docs already grainy)
-  p_brightness: 0.0    # DISABLED - degrades quality (docs already faded)
-  p_contrast: 0.0      # DISABLED - degrades quality (changes pixel values)
+  # DEGRADATION augmentations
+  # Was 0.0 for all four - meant the "Excellent" tier's documented plan
+  # (synthesize degradation for pristine docs) never actually ran, since the
+  # per-condition multiplier logic below is correctly implemented but has
+  # nothing to multiply against zero. Modest non-zero bases activate it;
+  # the multipliers (texture_degradation for blur/noise, text_contrast for
+  # brightness/contrast) still correctly zero these out for poor-condition
+  # docs, same as before.
+  p_blur: 0.15
+  p_noise: 0.15
+  p_brightness: 0.2
+  p_contrast: 0.2
 
   # GEOMETRIC augmentations (INCREASED 1.5x for poor-condition docs)
   # Pure coordinate remaps, no quality degradation
