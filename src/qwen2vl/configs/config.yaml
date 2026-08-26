@@ -114,7 +114,10 @@ training:
   cer_samples: 1.0  # Use full val set (auto-scales with val_split)
 
   # Quick-win regularizers (small dataset optimizations)
-  label_smoothing_factor: 0.05  # Handle annotator inconsistency (prsence/presence, publique/public, etc)
+  # label_smoothing_factor removed - was wired then deliberately reverted:
+  # its calibration/confidence-flattening effect cuts against greedy-decoded
+  # CER/WER on ambiguous handwriting specifically, unlike its usual wins in
+  # MT/classification. neftune_noise_alpha (below) stays active.
   neftune_noise_alpha: 5  # NEFTune - proven for small SFT datasets
 
   # Early stopping - ELITE: More patient (allow longer training)

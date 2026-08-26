@@ -403,21 +403,25 @@ class ImageAugmenter:
                 min_pixels_override = self.min_pixels_ratio
                 elastic_alpha_override = self.elastic_alpha
 
-            # 3. STAINS → Controls color jitter
-            #    Heavy staining (>28, 90th percentile, top 10%) already has color variation
-            #    Distribution: mean=18.0, median=20.3, 90th=27.8
-            if stains > 28:
-                p_color_mult = 0.0  # DISABLE (already varied colors)
+            # 3. STAINS + PAPER_COLOR_VARIANCE → Both gate color jitter applicability
+            #    Either high staining OR high paper color variance means the
+            #    document already has real color irregularity in the exact
+            #    dimension this augmentation synthesizes - adding more risks
+            #    pushing it outside what a real aged document looks like.
+            #    Previously paper_var only reduced intensity (hue_sat_mult=0.5)
+            #    rather than gating - now both are hard gates, consistent with
+            #    how every other condition metric in this function works.
+            #    stains >28 (90th percentile, top 10%): mean=18.0, median=20.3, 90th=27.8
+            #    paper_var >19 (80th percentile, top 20%): mean=14.3, median=12.0, 80th=19.2
+            if stains > 28 or paper_var > 19:
+                p_color_mult = 0.0  # DISABLE (already has real color variation)
             else:
                 p_color_mult = 1.0  # Standard
 
-            # 4. PAPER_COLOR_VARIANCE → Controls hue/sat jitter intensity
-            #    High variance (>19, 80th percentile, top 20%) already has diverse colors
-            #    Distribution: mean=14.3, median=12.0, 80th=19.2
-            if paper_var > 19:
-                hue_sat_mult = 0.5  # REDUCE (already varied)
-            else:
-                hue_sat_mult = 1.0  # Standard
+            # Intensity is no longer condition-scaled - the gate above now
+            # does that work. Kept as a parameter to _apply_color_jitter for
+            # interface stability, always at standard strength when it fires.
+            hue_sat_mult = 1.0
 
             # 5. TEXTURE_DEGRADATION → Controls blur/noise
             #    Rough paper (>18, 90th percentile, top 10%) already has texture noise
@@ -426,6 +430,7 @@ class ImageAugmenter:
                 p_degradation_mult = 0.0  # DISABLE blur/noise (already rough)
             else:
                 p_degradation_mult = 1.0  # Standard
+
 
         else:
             # No condition metrics - use standard augmentation
@@ -600,7 +605,10 @@ class ImageAugmenter:
         IMPORTANT: NO brightness/contrast jitter - degrades already-faded docs
 
         Args:
-            hue_sat_mult: Multiplier for hue/sat jitter intensity (0.5 for high paper_var docs)
+            hue_sat_mult: Intensity multiplier for hue/sat jitter. Always 1.0 as
+                called from __call__ now - paper_var gates applicability
+                (see p_color_mult) rather than scaling intensity. Kept as a
+                parameter for interface stability / potential future use.
         """
         # Convert to HSV for hue/saturation adjustment
         arr = np.array(img)
@@ -1381,12 +1389,12 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
         weight_decay=train_cfg["weight_decay"],
         max_grad_norm=train_cfg["max_grad_norm"],
         bf16=True,
-        # Both were previously in configs but never wired here - confirmed dead
-        # keys. label_smoothing_factor helps with annotator spelling
-        # inconsistency; neftune_noise_alpha is proven on small SFT datasets.
-        # supported_kwargs() below drops these harmlessly on transformers
-        # versions where either field doesn't exist.
-        label_smoothing_factor=train_cfg.get("label_smoothing_factor", 0.0),
+        # neftune_noise_alpha was a dead key before (in config, never wired to
+        # TrainingArguments) - now actually active. label_smoothing_factor was
+        # also wired at one point but removed: its calibration/confidence-
+        # flattening tradeoff cuts against greedy-decoded CER/WER specifically
+        # on ambiguous historical handwriting, where firm decisions matter -
+        # not a clear win the way it is for standard MT/classification.
         neftune_noise_alpha=train_cfg.get("neftune_noise_alpha", None),
         logging_steps=log_steps,
         logging_strategy="steps",
