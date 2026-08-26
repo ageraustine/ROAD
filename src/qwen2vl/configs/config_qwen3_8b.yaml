@@ -1,0 +1,105 @@
+# Qwen3-VL-8B OCR Training Config
+# Hardware: A100 80GB. Backwards compatible with the old configs - every new
+# key below has a default, so config.yaml / config_qwen3_2b.yaml still load.
+
+model:
+  name: "Qwen/Qwen3-VL-8B-Instruct"
+  use_flash_attention: true   # now falls back to sdpa on ImportError, no reload
+  use_quantization: false
+  torch_dtype: "bfloat16"
+
+data:
+  train_csv: "dataset/Train.csv"
+  test_csv: "dataset/Test.csv"
+  image_dir: "dataset/images"
+  image_ext: ".jpg"           # NEW - was hardcoded
+
+  k_folds: 1
+  val_split: 0.1              # only used when k_folds == 1
+  seed: 42
+
+  # NEW - set this to a page/scribe/volume column if one exists in Train.csv.
+  # Without it, rows from the same document can land in both train and val and
+  # every fold's score is optimistic.
+  group_col: null
+
+training:
+  output_dir: "outputs/qwen3-8b-v1"
+
+  batch_size: 2
+  eval_batch_size: 2          # NEW - decoupled from train batch
+  gradient_accumulation_steps: 8   # effective batch = 16
+
+  epochs: 3
+  learning_rate: 0.00002
+  warmup_ratio: 0.1
+  lr_scheduler: "cosine"
+  weight_decay: 0.05
+  max_grad_norm: 1.0
+  gradient_checkpointing: true     # NEW - PEFT-safe, use_reentrant=False
+
+  lora_r: 64
+  lora_alpha: 128
+  lora_dropout: 0.1
+  lora_target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+  # NEW - trains the vision->LLM projector in full. This is the cheap version
+  # of "adapt the visual path"; the LoRA targets above only touch the decoder.
+  # Comment out for a pure-decoder baseline to measure whether it helps.
+  lora_modules_to_save:
+    - "merger"
+
+  max_pixels: 2016000
+  min_pixels: 200704          # NEW - stops tiny crops being upscaled to noise
+  max_seq_length: 2048        # NEW - truncation was previously unbounded
+
+  strict_masking: true        # NEW - raise instead of silently training on prompt
+
+  # NEW - greedy CER on a fixed val subset each eval. This is the number that
+  # tracks the leaderboard; eval_loss is teacher-forced and only correlates.
+  compute_cer: true
+  cer_samples: 200
+
+  eval_steps: 50              # was 100 -> only ~6 evals per run at this size
+  save_steps: 50
+  save_total_limit: 3
+  logging_steps: 25
+  metric_for_best_model: "eval_cer"   # or "eval_loss"
+
+  num_workers: 8
+
+  # Early stopping - prevent wasting compute on plateaued folds
+  # For 8B model with smaller dataset, can plateau quickly
+  early_stopping:
+    enabled: true
+    metric: "eval_loss"  # Monitor eval_loss (stable) not eval_cer (noisy)
+    patience: 3  # Stop if no improvement for 3 evaluations
+    min_delta: 0.0001  # Minimum improvement to count as progress
+    # Note: metric_for_best_model is eval_cer (competition metric), but
+    # early stopping needs stable signal → use eval_loss here
+
+  # Resume from checkpoint
+  resume_from_checkpoint: true  # Auto-resume from last checkpoint if interrupted
+
+augmentation:
+  enabled: true               # now applied to TRAIN ONLY
+  p_blur: 0.0
+  p_noise: 0.0
+  p_brightness: 0.3
+  p_contrast: 0.3
+  p_rotate: 0.1
+  max_rotation: 1
+
+inference:
+  checkpoint: "outputs/qwen3-8b-v1/best"
+  output_csv: "submission.csv"
+  max_new_tokens: 256
+  num_beams: 5
+  batch_size: 8

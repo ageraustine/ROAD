@@ -98,7 +98,7 @@ augmentation:
   max_rotation: 1
 
 inference:
-  checkpoint: "outputs/qwen3-8b-v1/fold_1/best"
+  checkpoint: "outputs/qwen3-8b-v1/best"
   output_csv: "submission.csv"
   max_new_tokens: 256
   num_beams: 5

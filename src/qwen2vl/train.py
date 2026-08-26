@@ -1762,6 +1762,13 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
     seed = data_cfg.get("seed", 42)
     group_col = data_cfg.get("group_col")
 
+    # NOTE: previously referenced a `has_condition` from build_dataset's scope,
+    # which doesn't exist here - raised NameError on any k_folds>1 run without
+    # group_col. Compute it locally the same way build_dataset does.
+    has_condition = any(col in df.columns for col in
+                       ["text_contrast", "tears_and_holes", "stains",
+                        "paper_color_variance", "texture_degradation"])
+
     helper = ["_digit_density", "_uppercase_ratio", "_lexical_diversity",
               "_special_char_density", "_avg_word_length", "_has_digit", "_has_upper", "_text_len",
               "_text_diff_bin", "_digit_bin", "_upper_bin", "_bin",
@@ -2073,7 +2080,7 @@ def main():
                         help="Disable early stopping (train full epochs regardless of plateau)")
     args = parser.parse_args()
 
-    config_path = SCRIPT_DIR / args.config
+    config_path = SCRIPT_DIR.joinpath("configs") / args.config
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
 
