@@ -97,8 +97,8 @@ training:
   # trade-off was avoided deliberately.
   max_seq_length: 3584
 
-  eval_steps: 50
-  save_steps: 50
+  eval_steps: 100
+  save_steps: 100
   save_total_limit: 3
 
   # Compute CER+WER for monitoring (competition metric)
@@ -111,7 +111,7 @@ training:
   # CER computation for early stopping (ADAPTIVE: percentage or absolute count)
   # - Float 0.0-1.0: percentage of val set (e.g., 1.0 = 100%, 0.5 = 50%)
   # - Int: absolute count, capped at val_size (e.g., 500 → min(500, val_size))
-  cer_samples: 1.0  # Use full val set (auto-scales with val_split)
+  cer_samples: 0.5  # Use full val set (auto-scales with val_split)
 
   # Quick-win regularizers (small dataset optimizations)
   label_smoothing_factor: 0.05  # Handle annotator inconsistency (prsence/presence, publique/public, etc)
