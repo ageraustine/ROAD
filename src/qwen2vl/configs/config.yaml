@@ -79,11 +79,23 @@ training:
   # vision tokens. The default max_seq_length (2048, unset until now) left
   # under 80 tokens for prompt + assistant header + target text combined,
   # causing truncation to cut off the assistant header on longer samples -
-  # the "Could not locate the assistant header" crash. Sized with real
-  # headroom instead of shrinking max_pixels (which would cost legibility
-  # on faded/small handwriting - the thing the augmentation strategy above
-  # is specifically protecting).
-  max_seq_length: 2560
+  # the "Could not locate the assistant header" crash.
+  #
+  # Measured directly (check_seq_lengths.py) across 50/4098 samples: min=93,
+  # median=116, p95=2191, max=2861 - highly bimodal since there's no
+  # min_pixels floor, so small source images stay small (few vision tokens)
+  # while large scans approach the max_pixels ceiling (many tokens). This
+  # wasn't a Colab-vs-RunPod issue - max_seq_length was tuned for
+  # Qwen2-VL-7B (the original notebook's model); Qwen3-VL's DeepStack
+  # multi-level feature fusion produces more vision tokens for the same
+  # max_pixels, and was never re-validated after the model switch.
+  #
+  # 3584 gives real margin above the measured max, since only ~1% of the
+  # dataset was sampled - the true max across all ~4,100 samples could be
+  # higher. Raising this (not lowering max_pixels) preserves resolution/
+  # legibility - see the augmentation strategy notes above for why that
+  # trade-off was avoided deliberately.
+  max_seq_length: 3584
 
   eval_steps: 50
   save_steps: 50
