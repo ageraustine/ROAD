@@ -23,7 +23,7 @@ parser.add_argument("--config", default="config_qwen3_8b_full.yaml")
 parser.add_argument("--n", type=int, default=50, help="Number of samples to check")
 args = parser.parse_args()
 
-config_path = SCRIPT_DIR / "config" / args.config
+config_path = SCRIPT_DIR / "configs" / args.config
 with open(config_path) as f:
     cfg = yaml.safe_load(f)
 
