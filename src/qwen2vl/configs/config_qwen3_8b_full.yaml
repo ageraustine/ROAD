@@ -29,7 +29,7 @@ data:
   #         - Full 36-bin stratification > preventing 2% text overlap
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8b-seed42"  # Single split with text difficulty stratification
+  output_dir: "outputs/qwen3-8b-full"  # was a /content/drive/... Colab path - doesn't exist on RunPod
 
   batch_size: 2
   eval_batch_size: 2
@@ -197,7 +197,7 @@ augmentation:
   max_pixels_ratio: 1.0     # 100% of max_pixels (2,016,000)
 
 inference:
-  checkpoint: "outputs/qwen3-8b-full/best"
+  checkpoint: "outputs/qwen3-8b-full/best"  # matches training.output_dir + /best (k_folds=1, no fold_N subdir)
   output_csv: "submission_full.csv"
   max_new_tokens: 128  # Targets max at 120 chars - prevents loops structurally
   num_beams: 5

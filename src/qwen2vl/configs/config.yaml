@@ -1,105 +1,205 @@
-# Qwen3-VL-8B OCR Training Config
-# Hardware: A100 80GB. Backwards compatible with the old configs - every new
-# key below has a default, so config.yaml / config_qwen3_2b.yaml still load.
+# Qwen3-VL-8B Full Dataset Training (No K-Fold)
+# Train on 90% of data (~3,688 samples) vs K-fold's 80% (~3,278 samples)
 
 model:
   name: "Qwen/Qwen3-VL-8B-Instruct"
-  use_flash_attention: true   # now falls back to sdpa on ImportError, no reload
+  use_flash_attention: true
   use_quantization: false
   torch_dtype: "bfloat16"
 
 data:
-  train_csv: "dataset/Train.csv"
+  train_csv: "dataset/Train.csv"  # Using original (keeping duplicates unless leakage detected)
   test_csv: "dataset/Test.csv"
   image_dir: "dataset/images"
-  image_ext: ".jpg"           # NEW - was hardcoded
 
-  k_folds: 1
-  val_split: 0.1              # only used when k_folds == 1
-  seed: 42
+  # SINGLE SPLIT with VISUAL + TEXT DIFFICULTY stratification (analysis-driven)
+  # Stratifies by: condition (3) × text difficulty (3) × digits (2) × names (2) = 36 bins
+  # Ensures train/val have same distribution of:
+  #   - Visual degradation (pristine/moderate/poor documents)
+  #   - Text complexity (easy/medium/hard difficulty)
+  #   - Numbers and names (harder OCR challenges)
+  k_folds: 1  # Single 90/10 split (more data than k-fold's 67%)
+  val_split: 0.1  # 90% train (~3,688), 10% val (~410)
+  seed: 42 # 42 or 3407 -- all previous runs used 42
 
-  # NEW - set this to a page/scribe/volume column if one exists in Train.csv.
-  # Without it, rows from the same document can land in both train and val and
-  # every fold's score is optimistic.
-  group_col: null
+  # Note: Duplicate-group awareness REMOVED for best model performance
+  # Reason: For OCR/HTR, same text with different handwriting is NOT leakage
+  #         - Model must visually READ each document (cannot memorize)
+  #         - Legal boilerplate learning is desirable (realistic for test set)
+  #         - Full 36-bin stratification > preventing 2% text overlap
 
 training:
-  output_dir: "outputs/qwen3-8b-v1"
+  output_dir: "outputs/qwen3-8b-full"  # was a /content/drive/... Colab path - doesn't exist on RunPod
 
   batch_size: 2
-  eval_batch_size: 2          # NEW - decoupled from train batch
-  gradient_accumulation_steps: 8   # effective batch = 16
+  eval_batch_size: 2
+  gradient_accumulation_steps: 8  # effective batch = 16
 
-  epochs: 3
-  learning_rate: 0.00002
-  warmup_ratio: 0.1
+  # ELITE HYPERPARAMETERS - Optimized for 0.94 push
+  epochs: 5  # Train longer (early stopping protects against overfitting)
+  learning_rate: 0.00005  # 5e-5 (PROVEN - achieved 0.90 before, optimal convergence speed)
+  warmup_ratio: 0.1  # Shorter warmup = reach peak LR faster (was 0.15)
   lr_scheduler: "cosine"
-  weight_decay: 0.05
+
+  # LIGHTER regularization for elite performance (allow model to learn more)
+  weight_decay: 0.02  # Reduced from 0.03 (less constraint)
   max_grad_norm: 1.0
-  gradient_checkpointing: true     # NEW - PEFT-safe, use_reentrant=False
+  gradient_checkpointing: true
 
-  lora_r: 64
-  lora_alpha: 128
-  lora_dropout: 0.1
-  lora_target_modules:
-    - "q_proj"
-    - "k_proj"
-    - "v_proj"
-    - "o_proj"
-    - "gate_proj"
-    - "up_proj"
-    - "down_proj"
+  # LoRA config - Asymmetric ranks (Vision r=64, LLM r=16) [KEPT AS REQUESTED]
+  # Vision tower needs capacity for new script; LLM just needs task adaptation
+  lora_r: 16  # Base rank for LLM
+  lora_alpha: 32
+  lora_dropout: 0.05  # ELITE: Lighter dropout (was 0.1, allow more learning)
+  use_rslora: true  # Rank-Stabilized LoRA
+  use_dora: false
+  loraplus_lr_ratio: null  # DISABLED - logging anomaly suggests possible bug (0 A params, 368 B params)
 
-  # NEW - trains the vision->LLM projector in full. This is the cheap version
-  # of "adapt the visual path"; the LoRA targets above only touch the decoder.
-  # Comment out for a pure-decoder baseline to measure whether it helps.
-  lora_modules_to_save:
-    - "merger"
+  # Rank asymmetry - Vision r=64, LLM r=32 (~80M params, optimal capacity)
+  rank_pattern:
+    qkv: 64         # Vision attention (critical for stroke patterns)
+    proj: 64        # Vision output projection
+    linear_fc1: 64  # Vision MLP layer 1 (learns visual features)
+    linear_fc2: 64  # Vision MLP layer 2 (learns visual features)
+  alpha_pattern:
+    qkv: 128        # Scale alpha proportionally (2*rank)
+    proj: 128
+    linear_fc1: 128
+    linear_fc2: 128
+
+  # Target modules - Covers vision tower + DeepStack mergers + LLM
+  # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
+  # LLM: self_attn (q/k/v/o_proj) + mlp (gate/up/down_proj)
+  lora_target_modules: '^model\.(?:visual\.(?:blocks\.\d+\.(?:attn\.(?:qkv|proj)|mlp\.linear_fc[12])|merger\.linear_fc[12]|deepstack_merger_list\.\d+\.linear_fc[12])|language_model\.layers\.\d+\.(?:self_attn\.[qkvo]_proj|mlp\.(?:gate|up|down)_proj))'
+
+  lora_modules_to_save: null  # Merger covered in target_modules regex
 
   max_pixels: 2016000
-  min_pixels: 200704          # NEW - stops tiny crops being upscaled to noise
-  max_seq_length: 2048        # NEW - truncation was previously unbounded
 
-  strict_masking: true        # NEW - raise instead of silently training on prompt
-
-  # NEW - greedy CER on a fixed val subset each eval. This is the number that
-  # tracks the leaderboard; eval_loss is teacher-forced and only correlates.
-  compute_cer: true
-  cer_samples: 200
-
-  eval_steps: 50              # was 100 -> only ~6 evals per run at this size
+  eval_steps: 50
   save_steps: 50
   save_total_limit: 3
-  logging_steps: 25
-  metric_for_best_model: "eval_cer"   # or "eval_loss"
+
+  # Compute CER+WER for monitoring (competition metric)
+  compute_cer: true  # Also computes WER and competition score (0.5*WER + 0.5*CER)
+  metric_for_best_model: "eval_score"  # Use competition metric (not just CER)
 
   num_workers: 8
+  resume_from_checkpoint: true
 
-  # Early stopping - prevent wasting compute on plateaued folds
-  # For 8B model with smaller dataset, can plateau quickly
+  # CER computation for early stopping (ADAPTIVE: percentage or absolute count)
+  # - Float 0.0-1.0: percentage of val set (e.g., 1.0 = 100%, 0.5 = 50%)
+  # - Int: absolute count, capped at val_size (e.g., 500 → min(500, val_size))
+  cer_samples: 1.0  # Use full val set (auto-scales with val_split)
+
+  # Quick-win regularizers (small dataset optimizations)
+  label_smoothing_factor: 0.05  # Handle annotator inconsistency (prsence/presence, publique/public, etc)
+  neftune_noise_alpha: 5  # NEFTune - proven for small SFT datasets
+
+  # Early stopping - ELITE: More patient (allow longer training)
   early_stopping:
     enabled: true
-    metric: "eval_loss"  # Monitor eval_loss (stable) not eval_cer (noisy)
-    patience: 3  # Stop if no improvement for 3 evaluations
-    min_delta: 0.0001  # Minimum improvement to count as progress
-    # Note: metric_for_best_model is eval_cer (competition metric), but
-    # early stopping needs stable signal → use eval_loss here
-
-  # Resume from checkpoint
-  resume_from_checkpoint: true  # Auto-resume from last checkpoint if interrupted
+    metric: "eval_score"  # FIXED: Watch same metric we optimize (eval_loss rises while CER/WER fall)
+    patience: 5  # With cer_samples=1.0 (full val set), signal is stable for patience=5
+    min_delta: 0.0001  # Very small threshold - catches tiny improvements, avoids noise
 
 augmentation:
-  enabled: true               # now applied to TRAIN ONLY
-  p_blur: 0.0
-  p_noise: 0.0
-  p_brightness: 0.3
-  p_contrast: 0.3
-  p_rotate: 0.1
-  max_rotation: 1
+  enabled: true  # Document-aware augmentation based on condition analysis
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # ADAPTIVE AUGMENTATION STRATEGY - 4-CLASS SYSTEM
+  # Thresholds: 19, 37, 42 (updated 2026-08-13 after adding text_contrast)
+  # ═══════════════════════════════════════════════════════════════════════════════
+  #
+  # Dataset Distribution (after adding text_contrast detector):
+  #   Excellent (<19):      938 samples (22.9%) - Good condition + readable
+  #   Medium (19-37):     2,360 samples (57.6%) - Moderate degradation/fading
+  #   Poor (37-42):         414 samples (10.1%) - Significant damage/fading
+  #   Very Poor (>42):      386 samples (9.4%)  - Severe damage + faded text
+  #
+  # Condition score now based on 5 metrics (text_contrast ADDED):
+  #   - text_contrast (35% weight): CRITICAL - faded ink readability
+  #   - tears_and_holes (25% weight): Critical missing text
+  #   - paper_color_variance (20% weight): Paper uniformity
+  #   - texture_degradation (10% weight): Paper roughness
+  #   - stains (10% weight): Localized discoloration
+  #
+  # KEY INSIGHT: text_contrast detects faded ink that was previously missed
+  #   Documents with perfect paper but faded text were scored "excellent" (8-17)
+  #   and received FULL brightness/contrast jitter, making text WORSE.
+  #   Now properly detected and protected.
+  #
+  # Augmentation Strategy:
+  #
+  #   Excellent (<19, 22.9%):
+  #     - Good contrast text + clean paper
+  #     - Synthesize degradation (blur, noise, color jitter 1.2x)
+  #     - Standard geometric augmentation
+  #     → Goal: Add variety to pristine, high-contrast samples
+  #
+  #   Medium (19-37, 57.6%):
+  #     - Moderate fading or moderate physical damage
+  #     - Standard augmentation (all multipliers = 1.0)
+  #     - Balanced degradation + geometric
+  #
+  #   Poor (37-42, 10.1% - RARE!):
+  #     - Significant fading OR significant physical damage
+  #     - DISABLE degradation (already faded/damaged)
+  #     - INCREASE geometric 1.5x (rotation, warping, resolution)
+  #     → Goal: Prevent overfitting, protect faded text from brightness jitter
+  #
+  #   Very Poor (>42, 9.4% - RARE!):
+  #     - Severe fading + physical damage (worst cases)
+  #     - DISABLE all degradation (text barely visible)
+  #     - MAXIMUM geometric 2.5x (aggressive warping, rotation, downsampling)
+  #     → Goal: Force model to generalize from extreme outliers
+  #
+  # CRITICAL INSIGHT: Separate DEGRADATION (blur, noise) from GEOMETRIC (rotation,
+  # warping). A burnt document can still be scanned at different angles!
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  # DEGRADATION augmentations (disabled for poor-condition docs)
+  p_blur: 0.0          # DISABLED - degrades quality
+  p_noise: 0.0         # DISABLED - degrades quality (docs already grainy)
+  p_brightness: 0.0    # DISABLED - degrades quality (docs already faded)
+  p_contrast: 0.0      # DISABLED - degrades quality (changes pixel values)
+
+  # GEOMETRIC augmentations (INCREASED 1.5x for poor-condition docs)
+  # Pure coordinate remaps, no quality degradation
+  p_rotate: 0.5        # Alignment variation (×1.5 = 0.75 for poor docs)
+  max_rotation: 2.0    # ±2 degrees
+  p_shear: 0.4         # Scribe slant variation (most important, NOT adaptive)
+  max_shear: 6         # ±6 degrees
+
+  # Elastic deformation - simulates paper warping/curling during SCANNING
+  # CRITICAL: This is GEOMETRIC (how doc was scanned), NOT degradation!
+  # A burnt page can still curl during scanning → INCREASED for poor docs
+  # SAFE: Pure geometry, bicubic interpolation preserves faded ink
+  p_elastic: 0.3       # Base probability (×1.5 = 0.45 for poor docs)
+  elastic_alpha: 20    # Displacement strength (×1.3 = 26 for poor docs)
+  elastic_sigma: 6     # Smoothness (higher = gentler warping)
+  elastic_interpolation: "bicubic"  # CRITICAL - bilinear smears faded ink
+
+  # DEGRADATION: Color jitter - simulates paper color variance (brown→cream aging)
+  # Analysis shows: mean paper color variance = 27.9
+  # DISABLED for poor docs (already discolored)
+  p_color_jitter: 0.25     # Base probability (×0.0 = DISABLED for poor docs)
+  hue_jitter: 0.03         # ±3% hue - very subtle brown/cream shifts
+  saturation_jitter: 0.08  # ±8% saturation - subtle aging variation
+  # NO brightness/contrast jitter - degrades quality
+
+  # GEOMETRIC: Resolution jitter - prevents overfitting to fixed pixel budget
+  # Simulates different scan resolutions (independent of document damage!)
+  # INCREASED for poor docs (scan quality varies independently)
+  # Correct implementation: jitter max_pixels, not downscale→upscale blur
+  p_resolution_jitter: 0.3  # Base probability (×1.2 = 0.36 for poor docs)
+  min_pixels_ratio: 0.85    # 85% of max_pixels for normal docs (×0.7 = 59.5% for poor docs - more variance)
+  max_pixels_ratio: 1.0     # 100% of max_pixels (2,016,000)
 
 inference:
-  checkpoint: "outputs/qwen3-8b-v1/best"
-  output_csv: "submission.csv"
-  max_new_tokens: 256
+  checkpoint: "outputs/qwen3-8b-full/best"  # matches training.output_dir + /best (k_folds=1, no fold_N subdir)
+  output_csv: "submission_full.csv"
+  max_new_tokens: 128  # Targets max at 120 chars - prevents loops structurally
   num_beams: 5
-  batch_size: 8
+  repetition_penalty: 1.0  # Legal boilerplate has legitimate repetition - don't penalize
+  batch_size: 4

@@ -15,7 +15,7 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/workspace/ROAD}"
 SRC_DIR="${REPO_DIR}/src/qwen2vl"
-CONFIG_NAME="${1:-config_qwen3_8b.yaml}"
+CONFIG_NAME="${1:-config.yaml}"
 CONFIG_PATH="${SRC_DIR}/configs/${CONFIG_NAME}"
 LOG_PATH="/workspace/train_$(date +%Y%m%d_%H%M%S).log"
 

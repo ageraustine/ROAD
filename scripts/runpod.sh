@@ -173,7 +173,8 @@ cmd_create() {
   # NOTE: dependency install skipped on purpose - Jupyter launches right after
   # clone. Run `pip install -r requirements.txt` manually from a Jupyter
   # terminal (or the notebook's own install cell) once you actually need it.
-  local start_cmd="bash -c 'git clone ${repo_url} /workspace/${repo_name} && jupyter lab --ip=0.0.0.0 --allow-root --no-browser --notebook-dir=/workspace'"
+  local repo_path="/workspace/${repo_name}"
+  local start_cmd="bash -c 'set -e; if [ -d \"${repo_path}/.git\" ]; then echo \"Repo already present, pulling latest...\"; cd \"${repo_path}\" && (git pull || echo \"git pull failed, continuing with existing checkout\"); elif [ -d \"${repo_path}\" ]; then echo \"Found non-git directory at ${repo_path}, replacing it...\"; rm -rf \"${repo_path}\" && git clone ${repo_url} \"${repo_path}\"; else git clone ${repo_url} \"${repo_path}\"; fi; jupyter lab --ip=0.0.0.0 --allow-root --no-browser --notebook-dir=/workspace'"
 
   echo ">> Creating pod '${pod_name}' with GPU: ${gpu_id}, volume: ${vol_name}"
   local out ok=0
