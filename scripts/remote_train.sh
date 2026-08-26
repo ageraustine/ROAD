@@ -61,10 +61,12 @@ except zipfile.BadZipFile:
     exit 1
   fi
 
-  # Flatten regardless of the zip's internal folder structure - just find every
-  # image file wherever it landed and move it straight into dataset/images/.
+  # Flatten regardless of the zip's internal folder structure - batched into as
+  # few `mv` calls as possible (the `+` form groups many files per invocation,
+  # instead of spawning one process per file, which is what was slow before).
+  echo ">> Moving extracted images into place..."
   find "${TMP_EXTRACT}" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) \
-    -exec mv {} "${REPO_DIR}/dataset/images/" \;
+    -exec mv -t "${REPO_DIR}/dataset/images/" {} +
 
   rm -f "${TMP_ZIP}"
   rm -rf "${TMP_EXTRACT}"
