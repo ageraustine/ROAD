@@ -15,7 +15,7 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/workspace/ROAD}"
 SRC_DIR="${REPO_DIR}/src/qwen2vl"
-CONFIG_NAME="${1:-config.yaml}"
+CONFIG_NAME="${1:-config_qwen3_8b.yaml}"
 CONFIG_PATH="${SRC_DIR}/configs/${CONFIG_NAME}"
 LOG_PATH="/workspace/train_$(date +%Y%m%d_%H%M%S).log"
 
@@ -29,16 +29,50 @@ else
   echo "!! No requirements.txt found at ${SRC_DIR} - skipping install. Verify this is expected."
 fi
 
-# --- 2. Verify the dataset is actually there before burning GPU hours ---
+# --- 2. Download the dataset if it's not already there ---
 echo ">> Checking dataset..."
+DATASET_ZIP_URL="${DATASET_ZIP_URL:-https://storage.googleapis.com/road-handwriting/images.zip}"
+
 if [[ ! -d "${REPO_DIR}/dataset/images" ]] || [[ -z "$(ls -A "${REPO_DIR}/dataset/images" 2>/dev/null)" ]]; then
-  echo "!! Dataset not found at ${REPO_DIR}/dataset/images (or it's empty)."
-  echo "   This was flagged before: the repo doesn't include an actual dataset"
-  echo "   download command. Fetch it manually first, e.g.:"
-  echo "     # gsutil -m cp -r gs://YOUR_BUCKET/road-dataset ${REPO_DIR}/dataset"
-  echo "     # wget ... && tar -xzf ... -C ${REPO_DIR}/dataset"
-  echo "   Re-run this script once the dataset is in place."
-  exit 1
+  echo ">> Dataset not found at ${REPO_DIR}/dataset/images - downloading..."
+  mkdir -p "${REPO_DIR}/dataset/images"
+
+  TMP_ZIP=$(mktemp /tmp/images_XXXXXX.zip)
+  echo ">> Fetching ${DATASET_ZIP_URL} ..."
+  if ! curl -fL --progress-bar -o "${TMP_ZIP}" "${DATASET_ZIP_URL}"; then
+    echo "!! Download failed. Check the URL is still valid and reachable from this pod."
+    rm -f "${TMP_ZIP}"
+    exit 1
+  fi
+
+  TMP_EXTRACT=$(mktemp -d)
+  echo ">> Extracting..."
+  if ! unzip -q "${TMP_ZIP}" -d "${TMP_EXTRACT}"; then
+    echo "!! Extraction failed - is the download actually a valid zip? (partial download, wrong URL, etc.)"
+    rm -f "${TMP_ZIP}"; rm -rf "${TMP_EXTRACT}"
+    exit 1
+  fi
+
+  # Flatten regardless of the zip's internal folder structure - just find every
+  # image file wherever it landed and move it straight into dataset/images/.
+  find "${TMP_EXTRACT}" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) \
+    -exec mv {} "${REPO_DIR}/dataset/images/" \;
+
+  rm -f "${TMP_ZIP}"
+  rm -rf "${TMP_EXTRACT}"
+
+  if [[ -z "$(ls -A "${REPO_DIR}/dataset/images" 2>/dev/null)" ]]; then
+    echo "!! Extraction completed but no images ended up in ${REPO_DIR}/dataset/images."
+    echo "   The zip's internal structure may be unexpected - inspect it manually:"
+    echo "     curl -fL -o /tmp/images.zip ${DATASET_ZIP_URL} && unzip -l /tmp/images.zip | head -30"
+    exit 1
+  fi
+  echo ">> Download and extraction complete."
+fi
+
+if [[ ! -f "${REPO_DIR}/dataset/Train.csv" ]] || [[ ! -f "${REPO_DIR}/dataset/Test.csv" ]]; then
+  echo "!! Note: Train.csv/Test.csv not found at ${REPO_DIR}/dataset/ - only images.zip was downloaded here."
+  echo "   These are assumed to already be committed in the repo. If they're missing, pull them separately."
 fi
 N_IMAGES=$(ls "${REPO_DIR}/dataset/images" | wc -l)
 echo ">> Found ${N_IMAGES} images."
