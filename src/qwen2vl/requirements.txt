@@ -1,7 +1,10 @@
 # Core
 torch
 torchvision
-transformers
+# transformers 5.x hard-requires torch>=2.5; base image ships torch 2.4.1.
+# Pinned below 5.0 to avoid needing a lockstep torch+torchvision upgrade.
+# >=4.57 is train.py's own stated minimum for Qwen3-VL support.
+transformers>=4.57,<5.0
 accelerate
 
 # LoRA fine-tuning
@@ -18,6 +21,7 @@ pandas
 numpy
 pillow
 scikit-learn
+opencv-python-headless  # train.py imports cv2 unconditionally for augmentation - was missing entirely
 
 # Utilities
 pyyaml
