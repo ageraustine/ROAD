@@ -7,7 +7,7 @@
 # Usage (from inside the pod, e.g. after `ssh <pod>` then running this):
 #   bash remote_train.sh [config_filename]
 #
-# Default config_filename: config_qwen3_8b.yaml
+# Default config_filename: config.yaml
 # train.py's main() does `SCRIPT_DIR / args.config` with no subfolder logic
 # built in, so the actual --config argument passed to train.py must include
 # the configs/ prefix - this script handles that automatically below. Configs
@@ -17,7 +17,7 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/workspace/ROAD}"
 SRC_DIR="${REPO_DIR}/src/qwen2vl"
-CONFIG_NAME="${1:-config_qwen3_8b.yaml}"
+CONFIG_NAME="${1:-config.yaml}"
 CONFIG_PATH="${SRC_DIR}/configs/${CONFIG_NAME}"
 LOG_PATH="/workspace/train_$(date +%Y%m%d_%H%M%S).log"
 
@@ -96,7 +96,7 @@ if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "   train.py loads configs from <repo>/src/qwen2vl/config/<name>, not just"
   echo "   anywhere in the repo. If you haven't pushed it up yet, from your LOCAL"
   echo "   machine run something like:"
-  echo "     scp config_qwen3_8b.yaml <ssh-target>:${CONFIG_PATH}"
+  echo "     scp config.yaml <ssh-target>:${CONFIG_PATH}"
   echo "   (get <ssh-target> from: runpodctl ssh info <pod-id>)"
   exit 1
 fi
