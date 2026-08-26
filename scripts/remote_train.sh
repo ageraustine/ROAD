@@ -47,7 +47,15 @@ if [[ ! -d "${REPO_DIR}/dataset/images" ]] || [[ -z "$(ls -A "${REPO_DIR}/datase
 
   TMP_EXTRACT=$(mktemp -d)
   echo ">> Extracting..."
-  if ! unzip -q "${TMP_ZIP}" -d "${TMP_EXTRACT}"; then
+  if ! python3 -c "
+import zipfile, sys
+try:
+    with zipfile.ZipFile('${TMP_ZIP}') as z:
+        z.extractall('${TMP_EXTRACT}')
+except zipfile.BadZipFile:
+    print('!! Not a valid zip file', file=sys.stderr)
+    sys.exit(1)
+"; then
     echo "!! Extraction failed - is the download actually a valid zip? (partial download, wrong URL, etc.)"
     rm -f "${TMP_ZIP}"; rm -rf "${TMP_EXTRACT}"
     exit 1
