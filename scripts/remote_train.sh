@@ -8,10 +8,10 @@
 #   bash remote_train.sh [config_filename]
 #
 # Default config_filename: config.yaml
-# train.py's main() does `SCRIPT_DIR / args.config` with no subfolder logic
-# built in, so the actual --config argument passed to train.py must include
-# the configs/ prefix - this script handles that automatically below. Configs
-# live at <repo>/src/qwen2vl/configs/<filename>.
+# train.py's main() already does SCRIPT_DIR.joinpath("configs") / args.config
+# internally - so --config takes just the bare filename, NOT a configs/
+# prefix (passing one doubles it into configs/configs/...). Configs live at
+# <repo>/src/qwen2vl/configs/<filename>.
 
 set -euo pipefail
 
@@ -105,7 +105,7 @@ echo ">> Config found: ${CONFIG_PATH}"
 # --- 4. Launch training, fully detached ---
 echo ">> Launching training in the background..."
 echo "   Log file: ${LOG_PATH}"
-nohup python3 -u train.py --config "configs/${CONFIG_NAME}" > "${LOG_PATH}" 2>&1 &
+nohup python3 -u train.py --config "${CONFIG_NAME}" > "${LOG_PATH}" 2>&1 &
 TRAIN_PID=$!
 disown
 
