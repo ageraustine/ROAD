@@ -1,4 +1,4 @@
-# Qwen3-VL-8B Full Dataset Training (No K-Fold)
+# Qwen3-VL-4B Full Dataset Training (No K-Fold)
 # Train on 90% of data (~3,688 samples) vs K-fold's 80% (~3,278 samples)
 
 model:

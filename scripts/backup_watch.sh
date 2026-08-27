@@ -8,29 +8,41 @@
 # successful sync is lost. Shorter INTERVAL_SECONDS = less at risk, but more
 # rsync overhead. This is a real trade-off, not a free substitute.
 #
-# Usage:
-#   ./backup_watch.sh <ssh-target> [remote_outputs_path] [local_dest] [interval_seconds]
+# RunPod SSH uses a non-standard port and a specific identity key file (see
+# `runpodctl ssh info <pod-id>`'s "ssh_command" field) - plain `ssh user@host`
+# won't work. This script takes those as explicit arguments rather than
+# assuming defaults.
 #
-# Example:
-#   ./backup_watch.sh root@1.2.3.4 /workspace/ROAD/outputs ./backups 300
+# Usage:
+#   ./backup_watch.sh <user@host> <port> <identity_file> [remote_outputs_path] [local_dest] [interval_seconds]
+#
+# Example (from `runpodctl ssh info <pod-id>`'s ssh_command field):
+#   ssh -i /Users/macbook/.runpod/ssh/RunPod-Key-Go root@194.68.245.115 -p 22075
+# becomes:
+#   ./backup_watch.sh root@194.68.245.115 22075 /Users/macbook/.runpod/ssh/RunPod-Key-Go
 
 set -euo pipefail
 
-SSH_TARGET="${1:?Usage: $0 <ssh-target> [remote_outputs_path] [local_dest] [interval_seconds]}"
-REMOTE_PATH="${2:-/workspace/ROAD/outputs}"
-LOCAL_DEST="${3:-./backups}"
-INTERVAL="${4:-300}"  # default: every 5 minutes
+REMOTE_HOST="${1:?Usage: $0 <user@host> <port> <identity_file> [remote_outputs_path] [local_dest] [interval_seconds]}"
+SSH_PORT="${2:?Usage: $0 <user@host> <port> <identity_file> [remote_outputs_path] [local_dest] [interval_seconds]}"
+IDENTITY_FILE="${3:?Usage: $0 <user@host> <port> <identity_file> [remote_outputs_path] [local_dest] [interval_seconds]}"
+REMOTE_PATH="${4:-/workspace/ROAD/outputs}"
+LOCAL_DEST="${5:-./backups}"
+INTERVAL="${6:-300}"  # default: every 5 minutes
+
+SSH_CMD="ssh -i ${IDENTITY_FILE} -p ${SSH_PORT}"
 
 mkdir -p "${LOCAL_DEST}"
 
-echo ">> Backing up ${SSH_TARGET}:${REMOTE_PATH} -> ${LOCAL_DEST} every ${INTERVAL}s"
+echo ">> Backing up ${REMOTE_HOST}:${REMOTE_PATH} -> ${LOCAL_DEST} every ${INTERVAL}s"
+echo ">> Using: ${SSH_CMD}"
 echo ">> Ctrl+C to stop. This does NOT stop or affect training on the pod."
 echo ""
 
 while true; do
   TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
   echo "[${TIMESTAMP}] Syncing..."
-  if rsync -avz --partial -e ssh "${SSH_TARGET}:${REMOTE_PATH}/" "${LOCAL_DEST}/" 2>&1 | tail -5; then
+  if rsync -avz --partial -e "${SSH_CMD}" "${REMOTE_HOST}:${REMOTE_PATH}/" "${LOCAL_DEST}/" 2>&1 | tail -5; then
     echo "[${TIMESTAMP}] OK"
   else
     echo "[${TIMESTAMP}] !! Sync failed - pod may be unreachable. Will retry next interval."
