@@ -29,7 +29,7 @@ data:
   #         - Full 36-bin stratification > preventing 2% text overlap
 
 training:
-  output_dir: "/content/drive/MyDrive/road-training/outputs/qwen3-4b-full_2"  # was a /content/drive/... Colab path - doesn't exist on RunPod
+  output_dir: "/content/drive/MyDrive/road-training/outputs/qwen3-4b-full_v2"
 
   batch_size: 2
   eval_batch_size: 2
@@ -55,17 +55,17 @@ training:
   use_dora: false
   loraplus_lr_ratio: null  # DISABLED - logging anomaly suggests possible bug (0 A params, 368 B params)
 
-  # Rank asymmetry - Vision r=64, LLM r=32 (~80M params, optimal capacity)
+  # Rank asymmetry - Vision r=32, LLM r=16 (~80M params, optimal capacity)
   rank_pattern:
-    qkv: 64         # Vision attention (critical for stroke patterns)
-    proj: 64        # Vision output projection
-    linear_fc1: 64  # Vision MLP layer 1 (learns visual features)
-    linear_fc2: 64  # Vision MLP layer 2 (learns visual features)
+    qkv: 32         # Vision attention (critical for stroke patterns)
+    proj: 32        # Vision output projection
+    linear_fc1: 32  # Vision MLP layer 1 (learns visual features)
+    linear_fc2: 32  # Vision MLP layer 2 (learns visual features)
   alpha_pattern:
-    qkv: 128        # Scale alpha proportionally (2*rank)
-    proj: 128
-    linear_fc1: 128
-    linear_fc2: 128
+    qkv: 64        # Scale alpha proportionally (2*rank)
+    proj: 64
+    linear_fc1: 64
+    linear_fc2: 64
 
   # Target modules - Covers vision tower + DeepStack mergers + LLM
   # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
@@ -185,29 +185,27 @@ augmentation:
   # DEGRADATION augmentations
   # Was 0.0 for all four - meant the "Excellent" tier's documented plan
   # (synthesize degradation for pristine docs) never actually ran, since the
-  # per-condition multiplier logic below is correctly implemented but has
-  # nothing to multiply against zero. Modest non-zero bases activate it;
-  # the multipliers (texture_degradation for blur/noise, text_contrast for
-  # brightness/contrast) still correctly zero these out for poor-condition
-  # docs, same as before.
-  p_blur: 0.15
-  p_noise: 0.15
-  p_brightness: 0.2
-  p_contrast: 0.2
+  # REVERTED TO MATCH KNOWN-GOOD BASELINE (2026-08-27): the config that
+  # actually scored 0.09 (Qwen3-8B run) had all four of these at 0.0. The
+  # "modest non-zero bases activate the documented Excellent-tier plan"
+  # framing below was never itself validated against that working baseline -
+  # same unvalidated-change pattern as morphology/local_degradation. Zeroed
+  # until re-ablated deliberately, not by default inheritance from a
+  # differently-reasoned config.
+  p_blur: 0.0
+  p_noise: 0.0
+  p_brightness: 0.0
+  p_contrast: 0.0
 
-  # Ink-thickness variation (dilate/erode) - was missing entirely (defaulted
-  # to 0.0, same class of gap as p_blur/p_noise above before that fix).
-  # DEGRADATION-class, not geometric: gated by p_degradation_mult like blur/
-  # noise, auto-disabled for poor/very-poor condition docs. The underlying
-  # kernel-size bug (silently a no-op below ~400px image height, i.e. for
-  # every crop in this dataset) is fixed in train.py; this was previously
-  # untested even at p=0 in any meaningful sense.
+  # Ink-thickness variation (dilate/erode) - NOT in the known-good 0.09
+  # config at all (didn't exist yet). Zeroed to match that baseline exactly.
+  # Kept as a tunable, documented parameter rather than deleted - this is
+  # still a live ablation candidate, just not blended into the current
+  # baseline run.
   # NOT YET VALIDATED - measured effect is strong (Δpx~95% of pixels changed
-  # per firing on a real sample). Starting conservative (half of p_blur) on
-  # purpose. Ablate before trusting: one run with this at 0.0, one at 0.1,
-  # same seed/everything else, compare eval_score - don't fold this into a
-  # full training run unchecked.
-  p_morphology: 0.1
+  # per firing on a real sample). Ablate deliberately: 0.0 vs 0.1, same seed/
+  # everything else, compare eval_score.
+  p_morphology: 0.0
 
   # GEOMETRIC augmentations (INCREASED 1.5x for poor-condition docs)
   # Pure coordinate remaps, no quality degradation
@@ -241,8 +239,28 @@ augmentation:
   min_pixels_ratio: 0.85    # 85% of max_pixels for normal docs (×0.7 = 59.5% for poor docs - more variance)
   max_pixels_ratio: 1.0     # 100% of max_pixels (2,016,000)
 
+  # DEGRADATION: Localized noise/shadow (partial stain, fold shadow, ink
+  # bleed) confined to a soft-edged band instead of the whole canvas - forces
+  # reliance on language/context when part of a line is obscured, rather
+  # than pure pixel pattern-matching. Disabled for poor-condition docs, same
+  # as blur/noise/morphology.
+  # NOT IN the known-good 0.09 baseline (didn't exist yet) - zeroed to match.
+  # Still a live ablation candidate, same as morphology, just not part of the
+  # current baseline. Bounded by design (max ~40% of image width covered,
+  # verified by direct pixel measurement including under an adversarial
+  # multi-region config) so it can't blank a 1-2 line crop, but the
+  # *training effect* is unknown. Ablate deliberately: 0.0 vs a real value,
+  # same seed/everything else, compare eval_score.
+  p_local_degradation: 0.0
+  local_width_ratio: [0.12, 0.28]   # fraction of image width per patch
+  local_height_ratio: [0.85, 1.0]   # fraction of image height per patch
+  local_max_regions: 1              # patches per image (keep at 1 - see cumulative-width note in code)
+  local_noise_std: 20
+  local_shadow_strength: 0.35
+  local_soft_edge_px: 8
+
 inference:
-  checkpoint: "/content/drive/MyDrive/road-training/outputs/qwen3-4b-full_2/best"  # matches training.output_dir + /best (k_folds=1, no fold_N subdir)
+  checkpoint: "/content/drive/MyDrive/road-training/outputs/qwen3-4b-full_v2/best"  # matches training.output_dir + /best (k_folds=1, no fold_N subdir)
   output_csv: "submission_full.csv"
   max_new_tokens: 128  # Targets max at 120 chars - prevents loops structurally
   num_beams: 5

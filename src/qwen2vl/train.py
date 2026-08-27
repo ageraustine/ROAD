@@ -81,20 +81,7 @@ SYSTEM_PROMPT = (
 
 OCR_PROMPT = (
     "Transcribe the handwritten text in this image exactly as written. "
-    "The image may contain one or two lines of text - transcribe exactly "
-    "what is visible.\n\n"
-    "Preserve original archaic spelling, capitalization, and punctuation - "
-    "do not modernize or standardize the text.\n\n"
-    "Specific conventions to preserve exactly:\n"
-    "- Keep \"&\" as \"&\" - do not expand it to \"and\".\n"
-    "- Preserve both Arabic numerals (1674) and Roman numerals (xvi) exactly as "
-    "written - do not convert between them.\n"
-    "- Monetary amounts are written out in full words (e.g. \"Five hundred pounds "
-    "Currant mony\", \"Sterling money of Barbados\") - never use £ or $ symbols.\n"
-    "- If a caret (^), tilde (~), or a run of repeated letters like \"xx\" or "
-    "\"xxx\" appears in the source, reproduce it exactly as written and in its "
-    "exact position, rather than expanding, interpreting, or omitting it.\n\n"
-    "Output only the transcription, with no additional commentary."
+    "Preserve spelling, punctuation, and line breaks. Output only the transcription."
 )
 
 ASSISTANT_HEADER = "<|im_start|>assistant\n"
@@ -455,25 +442,28 @@ class ImageAugmenter:
                 elastic_alpha_override = self.elastic_alpha
                 p_local_degradation_mult = 1.0
 
-            # 3. STAINS + PAPER_COLOR_VARIANCE → Both gate color jitter applicability
-            #    Either high staining OR high paper color variance means the
-            #    document already has real color irregularity in the exact
-            #    dimension this augmentation synthesizes - adding more risks
-            #    pushing it outside what a real aged document looks like.
-            #    Previously paper_var only reduced intensity (hue_sat_mult=0.5)
-            #    rather than gating - now both are hard gates, consistent with
-            #    how every other condition metric in this function works.
-            #    stains >28 (90th percentile, top 10%): mean=18.0, median=20.3, 90th=27.8
-            #    paper_var >19 (80th percentile, top 20%): mean=14.3, median=12.0, 80th=19.2
-            if stains > 28 or paper_var > 19:
+            # 3. STAINS → Controls color jitter (hard gate)
+            #    Heavy staining (>28, 90th percentile, top 10%) already has color variation
+            #    Distribution: mean=18.0, median=20.3, 90th=27.8
+            #    REVERTED to match the known-good baseline (2026-08-27): the
+            #    combined hard-gate version (stains OR paper_var disables)
+            #    fully silenced color_jitter for 23.4% of train (measured
+            #    directly against document_condition.csv), vs 9.9% under this
+            #    separate version - a real behavioral difference, not
+            #    cosmetic, and never itself validated against the config that
+            #    scored 0.09.
+            if stains > 28:
                 p_color_mult = 0.0  # DISABLE (already has real color variation)
             else:
                 p_color_mult = 1.0  # Standard
 
-            # Intensity is no longer condition-scaled - the gate above now
-            # does that work. Kept as a parameter to _apply_color_jitter for
-            # interface stability, always at standard strength when it fires.
-            hue_sat_mult = 1.0
+            # 4. PAPER_COLOR_VARIANCE → Controls hue/sat jitter intensity (soft reduce, not a gate)
+            #    High variance (>19, 80th percentile, top 20%) already has diverse colors
+            #    Distribution: mean=14.3, median=12.0, 80th=19.2
+            if paper_var > 19:
+                hue_sat_mult = 0.5  # REDUCE (already varied) - still fires, just gentler
+            else:
+                hue_sat_mult = 1.0  # Standard
 
             # 5. TEXTURE_DEGRADATION → Controls blur/noise
             #    Rough paper (>18, 90th percentile, top 10%) already has texture noise
