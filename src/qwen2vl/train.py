@@ -81,6 +81,8 @@ SYSTEM_PROMPT = (
 
 OCR_PROMPT = (
     "Transcribe the handwritten text in this image exactly as written. "
+    "The image may contain one or two lines of text - transcribe exactly "
+    "what is visible.\n\n"
     "Preserve original archaic spelling, capitalization, and punctuation - "
     "do not modernize or standardize the text.\n\n"
     "Specific conventions to preserve exactly:\n"
@@ -313,6 +315,20 @@ class ImageAugmenter:
         self.min_pixels_ratio = cfg.get("min_pixels_ratio", 0.7)
         self.max_pixels_ratio = cfg.get("max_pixels_ratio", 1.0)
 
+        # Non-uniform/localized degradation: noise or shadow confined to a
+        # soft-edged vertical band, rather than applied across the whole
+        # canvas. Forces reliance on language context when part of a line
+        # is obscured, instead of pure pixel-level pattern matching. Bounded
+        # by design so it can never occlude the whole crop - these are 1-2
+        # line images with no redundant signal to spare.
+        self.p_local_degradation = cfg.get("p_local_degradation", 0.0)
+        self.local_width_ratio = cfg.get("local_width_ratio", (0.12, 0.28))  # fraction of image width per patch
+        self.local_height_ratio = cfg.get("local_height_ratio", (0.85, 1.0))  # fraction of image height per patch
+        self.local_max_regions = cfg.get("local_max_regions", 1)  # patches per image
+        self.local_noise_std = cfg.get("local_noise_std", 20)  # stronger than global noise (5-15) since confined
+        self.local_shadow_strength = cfg.get("local_shadow_strength", 0.35)  # max darkening fraction
+        self.local_soft_edge_px = cfg.get("local_soft_edge_px", 8)  # Gaussian blur radius on the patch mask
+
     def _sample_background_color(self, img: Image.Image) -> tuple:
         """
         Sample mean background color from image edges (border replication alternative).
@@ -397,18 +413,32 @@ class ImageAugmenter:
             paper_var = condition_metrics.get("paper_color_variance", 0)
             texture = condition_metrics.get("texture_degradation", 0)
 
-            # 1. TEXT CONTRAST → Controls brightness/contrast jitter
+            # 1. TEXT CONTRAST → Controls brightness/contrast jitter AND morphology
             #    Faded text (>44, 80th percentile, top 20%) cannot handle brightness changes
+            #    OR erosion - thinning already-faint ink risks pushing it below
+            #    legibility (dilate, the other 50% of morphology's draws, is
+            #    comparatively safe, but the gate applies to the whole
+            #    augmentation since dilate vs erode is a random 50/50 choice
+            #    made after this gate, not something conditionable per-branch
+            #    here without restructuring _apply_morphology).
             #    Distribution: mean=20.5, median=11.0, 80th=43.9
             if text_contrast > 44:
                 p_brightness_mult = 0.0  # DISABLE (protect faded text)
                 p_contrast_mult = 0.0    # DISABLE (protect faded text)
+                p_morphology_mult = 0.0  # DISABLE (protect faded text from erosion)
             else:
                 p_brightness_mult = 1.0  # Standard
                 p_contrast_mult = 1.0    # Standard
+                p_morphology_mult = 1.0  # Standard
 
             # 2. TEARS_AND_HOLES → Controls geometric augmentation intensity
-            #    Damaged docs (>7, 95th percentile, top 5%) are rare → increase diversity
+            #    (increased) AND local_degradation (decreased). Damaged docs
+            #    (>7, 95th percentile, top 5%) are rare -> geometric variety
+            #    helps (a torn page still scans at different angles), but
+            #    local_degradation synthesizes the SAME failure mode
+            #    (part of the line obscured) that tears already cause for
+            #    real - stacking synthetic occlusion on top of real missing
+            #    content risks destroying the only signal in a 1-2 line crop.
             #    Distribution: mean=2.2, median=0.0, 95th=7.3 (90% have 0.0 - no tears)
             if tears > 7:
                 p_elastic_mult = 1.5      # INCREASE warping
@@ -416,12 +446,14 @@ class ImageAugmenter:
                 p_resolution_mult = 1.5   # INCREASE resolution variance
                 min_pixels_override = 0.65  # More aggressive downsampling
                 elastic_alpha_override = self.elastic_alpha * 1.4
+                p_local_degradation_mult = 0.0  # DISABLE (already has real obscured content)
             else:
                 p_elastic_mult = 1.0
                 p_rotation_mult = 1.0
                 p_resolution_mult = 1.0
                 min_pixels_override = self.min_pixels_ratio
                 elastic_alpha_override = self.elastic_alpha
+                p_local_degradation_mult = 1.0
 
             # 3. STAINS + PAPER_COLOR_VARIANCE → Both gate color jitter applicability
             #    Either high staining OR high paper color variance means the
@@ -462,6 +494,8 @@ class ImageAugmenter:
             p_color_mult = 1.0
             p_brightness_mult = 1.0
             p_contrast_mult = 1.0
+            p_morphology_mult = 1.0
+            p_local_degradation_mult = 1.0
             hue_sat_mult = 1.0
             elastic_alpha_override = self.elastic_alpha
 
@@ -489,16 +523,19 @@ class ImageAugmenter:
             img = img.rotate(angle, fillcolor=bg_color, expand=True, resample=Image.BICUBIC)
 
         # DEGRADATION: Morphological ops (models ink thickness, pen pressure)
-        # Disabled for poor-condition docs (ink already varied)
-        if random.random() < (self.p_morphology * p_degradation_mult):
+        # DEGRADATION: Morphological ops (models ink thickness, pen pressure)
+        # Gated on text_contrast (faded-ink risk), not texture_degradation -
+        # see the multiplier block above for why.
+        if random.random() < (self.p_morphology * p_morphology_mult):
             arr = np.array(img)
             h, w = arr.shape[:2]
 
-            # REFINEMENT: Scale-aware kernel size based on image resolution
-            # k = max(1, int(h × 0.005)) ensures consistent relative ink thickness
-            # Low-res: smaller kernel (avoids erasing fine strokes)
-            # High-res: larger kernel (visible effect at higher DPI)
-            kernel_size = max(1, int(h * 0.005))
+            # REFINEMENT: Scale-aware kernel, floored at 3 (not 1). h*0.005
+            # rounds to 1 - a mathematical no-op for cv2.dilate/erode - for
+            # any image under ~400px tall, which is every line-crop we've
+            # actually seen (30-265px). Below that floor this augmentation
+            # silently did nothing except the trailing blur.
+            kernel_size = max(3, int(h * 0.005))
             kernel_size = kernel_size if kernel_size % 2 == 1 else kernel_size + 1  # Must be odd
             kernel = np.ones((kernel_size, kernel_size), np.uint8)
 
@@ -530,11 +567,18 @@ class ImageAugmenter:
             offset = abs(shear_factor * h)
             new_w = int(w + offset)
 
-            # Affine transform for horizontal shear with expanded canvas
+            # REFINEMENT: recenter regardless of shear direction. Previously the
+            # centering offset only applied when shear_factor > 0, so negative
+            # angles anchored the top row at the original position and pushed
+            # the entire offset into the bottom row instead of splitting it -
+            # same shear magnitude, inconsistent framing depending on sign.
+            # Confirmed empirically: -8deg left top unshifted / bottom +13px,
+            # while +8deg gave a symmetric +6px/-6px split. This makes both
+            # signs symmetric.
             img = img.transform(
                 (new_w, h),
                 Image.AFFINE,
-                (1, shear_factor, -shear_factor * h / 2 if shear_factor > 0 else 0, 0, 1, 0),
+                (1, shear_factor, -shear_factor * h / 2, 0, 1, 0),
                 fillcolor=bg_color,
                 resample=Image.BICUBIC  # Better quality than BILINEAR for text
             )
@@ -576,6 +620,16 @@ class ImageAugmenter:
         # Proper implementation: jitter max_pixels, not downscale→upscale blur
         if random.random() < (self.p_resolution_jitter * p_resolution_mult):
             img = self._apply_resolution_jitter(img, min_pixels_override)
+
+        # DEGRADATION: Localized noise/shadow (partial stain, fold shadow, ink
+        # bleed patch) confined to a soft-edged band, not the whole canvas.
+        # Gated on tears_and_holes, not texture_degradation - this augmentation
+        # synthesizes the same "part of the line is obscured" failure mode
+        # that real tears cause, so it's disabled when that's already present
+        # for real, rather than when paper is merely rough (see multiplier
+        # block above).
+        if random.random() < (self.p_local_degradation * p_local_degradation_mult):
+            img = self._apply_local_degradation(img)
 
         return img
 
@@ -637,7 +691,10 @@ class ImageAugmenter:
         # Hue jitter (brown ↔ cream color shifts) - scaled by hue_sat_mult
         hue_range = self.hue_jitter * hue_sat_mult
         hue_shift = random.uniform(-hue_range, hue_range) * 180  # OpenCV hue is 0-180
-        hsv[:, :, 0] = np.clip(hsv[:, :, 0] + hue_shift, 0, 180)
+        # Hue is circular (0 and 180 are both "red") - wrap, don't clip. Clipping
+        # hard-stopped pixels near the boundary instead of wrapping to the
+        # adjacent (correct) hue on the other side.
+        hsv[:, :, 0] = (hsv[:, :, 0] + hue_shift) % 180
 
         # Saturation jitter (faded vs vibrant paper) - scaled by hue_sat_mult
         sat_range = self.saturation_jitter * hue_sat_mult
@@ -682,6 +739,64 @@ class ImageAugmenter:
         img = img.resize((new_w, new_h), Image.LANCZOS)
 
         return img
+
+    def _apply_local_degradation(self, img: Image.Image) -> Image.Image:
+        """
+        Confine noise or a shadow to one or more soft-edged vertical bands,
+        instead of the whole canvas. Simulates a localized stain, fold
+        shadow, or patch of ink bleed - as opposed to p_noise/p_blur which
+        degrade the entire image uniformly.
+
+        Deliberately bounded so this can never blank out the crop: width is
+        capped at local_width_ratio (default 12-28% of image width) per
+        region, height defaults to nearly the full crop (these are 1-2 line
+        images - a stain plausibly runs top-to-bottom of the line, not just
+        part of it), and the mask is Gaussian-blurred at the edges so there's
+        no hard on/off boundary a model could learn to key on instead of the
+        text itself.
+        """
+        arr = np.array(img).astype(np.float32)
+        h, w = arr.shape[:2]
+
+        n_regions = random.randint(1, max(1, self.local_max_regions))
+        mode_choices = ["noise", "shadow"]
+
+        # Cumulative width budget across ALL regions, not per-region - with
+        # local_max_regions > 1, per-region caps alone don't bound total
+        # coverage (3 regions x 40% each can tile the whole image). This
+        # keeps combined coverage under ~40% of width regardless of region
+        # count, so context always remains visible.
+        width_budget = int(w * 0.4)
+
+        for _ in range(n_regions):
+            if width_budget <= 4:
+                break
+            patch_w = int(w * random.uniform(*self.local_width_ratio))
+            patch_w = max(4, min(patch_w, int(w * 0.4), width_budget))
+            width_budget -= patch_w
+            patch_h = int(h * random.uniform(*self.local_height_ratio))
+            patch_h = max(2, min(patch_h, h))
+
+            x0 = random.randint(0, max(0, w - patch_w))
+            y0 = random.randint(0, max(0, h - patch_h))
+
+            # Soft mask: hard rectangle, then blurred so edges fade smoothly
+            mask = np.zeros((h, w), dtype=np.float32)
+            mask[y0:y0 + patch_h, x0:x0 + patch_w] = 1.0
+            if self.local_soft_edge_px > 0:
+                mask = gaussian_filter(mask, self.local_soft_edge_px, mode="constant", cval=0)
+            mask = mask[:, :, None]  # broadcast over RGB
+
+            mode = random.choice(mode_choices)
+            if mode == "noise":
+                noise = np.random.normal(0, self.local_noise_std, arr.shape)
+                arr = arr + noise * mask
+            else:  # shadow
+                darken = 1.0 - self.local_shadow_strength * mask
+                arr = arr * darken
+
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+        return Image.fromarray(arr)
 
 
 # ─────────────────────────────────────────────────────────────

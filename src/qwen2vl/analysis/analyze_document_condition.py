@@ -55,7 +55,11 @@ from tqdm import tqdm
 import cv2
 
 SCRIPT_DIR = Path(__file__).parent
-REPO_ROOT = SCRIPT_DIR.parent.parent
+# This script lives in src/qwen2vl/analysis/ - one level deeper than train.py
+# (src/qwen2vl/), and dataset/ is a sibling of src/, not a child of it. So this
+# needs an extra .parent versus train.py's SCRIPT_DIR.parent.parent to land on
+# the same repo root.
+REPO_ROOT = SCRIPT_DIR.parent.parent.parent
 
 
 def detect_paper_color_variance(img_gray, img_rgb):
@@ -689,47 +693,10 @@ def analyze_document_condition(image_path):
         }
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Analyze document physical condition")
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="config_qwen3_8b_full.yaml",
-        help="Path to config file"
-    )
-    parser.add_argument(
-        "--output",
-        type=str,
-        default=None,
-        help="Output CSV path (default: dataset/document_condition.csv)"
-    )
-    args = parser.parse_args()
-
-    # Load config
-    config_path = SCRIPT_DIR / args.config
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-
-    data_cfg = cfg["data"]
-
-    # Load training data
-    train_csv = REPO_ROOT / data_cfg["train_csv"]
-    df = pd.read_csv(train_csv)
-
-    image_dir = REPO_ROOT / data_cfg["image_dir"]
-    image_ext = data_cfg.get("image_ext", ".jpg")
-
-    if args.output:
-        output_path = Path(args.output)
-    else:
-        output_path = REPO_ROOT / "dataset" / "document_condition.csv"
-
-    print(f"Analyzing document condition for {len(df)} images...")
-    print("Detecting: text contrast, paper color, tears/holes, texture, stains")
-
-    # Analyze each image
+def analyze_split(df, image_dir, image_ext, split_name):
+    """Run condition analysis for every ID in df, tagged with its split name."""
     results = []
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="Analyzing documents"):
+    for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Analyzing {split_name}"):
         image_path = image_dir / f"{row['ID']}{image_ext}"
 
         if not image_path.exists():
@@ -748,7 +715,94 @@ def main():
             metrics = analyze_document_condition(image_path)
             metrics["ID"] = row["ID"]
 
+        metrics["split"] = split_name
         results.append(metrics)
+
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Analyze document physical condition")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config_qwen3_8b_full.yaml",
+        help="Path to config file"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output CSV path (default: dataset/document_condition.csv)"
+    )
+    parser.add_argument(
+        "--test-csv",
+        type=str,
+        default=None,
+        help="Path to test CSV (default: data.test_csv from config, if set). "
+             "Test images get the same condition analysis as train, tagged split='test'."
+    )
+    parser.add_argument(
+        "--test-image-dir",
+        type=str,
+        default=None,
+        help="Image dir for test split (default: data.test_image_dir from config, "
+             "or the same image_dir as train if neither is set)."
+    )
+    parser.add_argument(
+        "--skip-test",
+        action="store_true",
+        help="Analyze train only, even if a test CSV is configured."
+    )
+    args = parser.parse_args()
+
+    # Load config
+    # This script lives in src/qwen2vl/analysis/, but configs live in
+    # src/qwen2vl/configs/ - one level up from here, not alongside the script.
+    config_path = SCRIPT_DIR.parent / "configs" / args.config
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+
+    data_cfg = cfg["data"]
+
+    # Load training data
+    train_csv = REPO_ROOT / data_cfg["train_csv"]
+    train_df = pd.read_csv(train_csv)
+
+    image_dir = REPO_ROOT / data_cfg["image_dir"]
+    image_ext = data_cfg.get("image_ext", ".jpg")
+
+    if args.output:
+        output_path = Path(args.output)
+    else:
+        output_path = REPO_ROOT / "dataset" / "document_condition.csv"
+
+    # Resolve test CSV / image dir: CLI flag > config key > skip
+    test_csv_arg = args.test_csv or data_cfg.get("test_csv")
+    test_image_dir_arg = args.test_image_dir or data_cfg.get("test_image_dir")
+
+    test_df = None
+    test_image_dir = None
+    if test_csv_arg and not args.skip_test:
+        test_csv_path = REPO_ROOT / test_csv_arg
+        test_df = pd.read_csv(test_csv_path)
+        # Test.csv sometimes ships with a UTF-8 BOM on the ID header; normalize it.
+        test_df.columns = [c.lstrip("\ufeff") for c in test_df.columns]
+        test_image_dir = REPO_ROOT / test_image_dir_arg if test_image_dir_arg else image_dir
+
+    total = len(train_df) + (len(test_df) if test_df is not None else 0)
+    print(f"Analyzing document condition for {total} images "
+          f"({len(train_df)} train" + (f", {len(test_df)} test)" if test_df is not None else ")"))
+    print("Detecting: text contrast, paper color, tears/holes, texture, stains")
+
+    # Analyze each split
+    results = analyze_split(train_df, image_dir, image_ext, "train")
+    if test_df is not None:
+        results += analyze_split(test_df, test_image_dir, image_ext, "test")
+    elif test_csv_arg and args.skip_test:
+        print("  (--skip-test set: not analyzing configured test_csv)")
+    else:
+        print("  (no test_csv configured/passed - analyzing train only, as before)")
 
     # Convert to DataFrame
     results_df = pd.DataFrame(results)
@@ -759,6 +813,9 @@ def main():
     results_df.to_csv(output_path, index=False)
 
     print(f"\n✓ Saved document condition analysis to: {output_path}")
+    if "split" in results_df.columns:
+        counts = results_df["split"].value_counts()
+        print(f"  Rows by split: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
 
     # Print statistics
     successful = results_df[results_df["success"] == True]

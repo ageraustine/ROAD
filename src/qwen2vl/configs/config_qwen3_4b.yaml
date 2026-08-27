@@ -29,7 +29,7 @@ data:
   #         - Full 36-bin stratification > preventing 2% text overlap
 
 training:
-  output_dir: "outputs/qwen3-4b-full"  # was a /content/drive/... Colab path - doesn't exist on RunPod
+  output_dir: "/content/drive/MyDrive/road-training/outputs/qwen3-4b-full_2"  # was a /content/drive/... Colab path - doesn't exist on RunPod
 
   batch_size: 2
   eval_batch_size: 2
@@ -99,7 +99,7 @@ training:
 
   eval_steps: 100
   save_steps: 100
-  save_total_limit: 3
+  save_total_limit: 1
 
   # Compute CER+WER for monitoring (competition metric)
   compute_cer: true  # Also computes WER and competition score (0.5*WER + 0.5*CER)
@@ -195,6 +195,20 @@ augmentation:
   p_brightness: 0.2
   p_contrast: 0.2
 
+  # Ink-thickness variation (dilate/erode) - was missing entirely (defaulted
+  # to 0.0, same class of gap as p_blur/p_noise above before that fix).
+  # DEGRADATION-class, not geometric: gated by p_degradation_mult like blur/
+  # noise, auto-disabled for poor/very-poor condition docs. The underlying
+  # kernel-size bug (silently a no-op below ~400px image height, i.e. for
+  # every crop in this dataset) is fixed in train.py; this was previously
+  # untested even at p=0 in any meaningful sense.
+  # NOT YET VALIDATED - measured effect is strong (Δpx~95% of pixels changed
+  # per firing on a real sample). Starting conservative (half of p_blur) on
+  # purpose. Ablate before trusting: one run with this at 0.0, one at 0.1,
+  # same seed/everything else, compare eval_score - don't fold this into a
+  # full training run unchecked.
+  p_morphology: 0.1
+
   # GEOMETRIC augmentations (INCREASED 1.5x for poor-condition docs)
   # Pure coordinate remaps, no quality degradation
   p_rotate: 0.5        # Alignment variation (×1.5 = 0.75 for poor docs)
@@ -228,7 +242,7 @@ augmentation:
   max_pixels_ratio: 1.0     # 100% of max_pixels (2,016,000)
 
 inference:
-  checkpoint: "outputs/qwen3-4b-full/best"  # matches training.output_dir + /best (k_folds=1, no fold_N subdir)
+  checkpoint: "/content/drive/MyDrive/road-training/outputs/qwen3-4b-full_2/best"  # matches training.output_dir + /best (k_folds=1, no fold_N subdir)
   output_csv: "submission_full.csv"
   max_new_tokens: 128  # Targets max at 120 chars - prevents loops structurally
   num_beams: 5
