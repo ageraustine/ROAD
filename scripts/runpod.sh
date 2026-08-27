@@ -27,6 +27,20 @@ DEFAULT_IMAGE="runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 CONTAINER_DISK_GB="${CONTAINER_DISK_GB:-25}"
 VOLUME_GB="${VOLUME_GB:-70}"
 
+# USE_NETWORK_VOLUME=false switches to a pod-local (inline) volume instead of
+# a Network Volume. This sidesteps the volume-capable-datacenter constraint
+# entirely - any datacenter with GPU stock works, opening up cheaper GPUs
+# (A40, RTX A6000) that don't currently have stock in a volume-capable DC.
+#
+# REAL TRADE-OFF, not free: an inline volume survives pod STOP but is
+# permanently destroyed on pod DELETE/TERMINATE. There is no separate,
+# reusable storage resource anymore - so `resize` (which deletes and
+# recreates the pod to change GPU) becomes DESTRUCTIVE in this mode, not
+# safe like it is with a real Network Volume. This mode assumes you are
+# periodically downloading checkpoints externally (see backup_watch.sh) as
+# the actual safety net, not the pod's disk itself.
+USE_NETWORK_VOLUME="${USE_NETWORK_VOLUME:-false}"
+
 # ---------- shared helpers ----------
 
 gpu_list_json() { runpodctl gpu list; }
@@ -45,17 +59,32 @@ print(f\"{'OK' if any_stock else 'NO_STOCK'}|{match['securePricePerHr']}\")
 "
 }
 
-pick_datacenter_for_gpu() {  # $1=gpuId -> a DC id with stock, or empty
+# Datacenters confirmed to support Network Volumes, per RunPod's own API error
+# message (which enumerates the full supported list). GPU stock existing in a
+# datacenter does NOT mean that datacenter supports volumes - CA-MTL-1 is a
+# real example that has GPU stock but rejects volume creation entirely. This
+# list may drift over time; if volume creation starts failing again with a
+# similar "not found or does not support network volumes" error, update it
+# from that error message's own list.
+VOLUME_CAPABLE_DCS=(
+  AP-IN-2 AP-JP-1 CA-MTL-3 CA-MTL-4 EU-FR-1 EU-NL-1 EU-RO-1 EUR-IS-1
+  EUR-IS-3 EUR-IS-4 EUR-NO-1 EUR-NO-2 US-CA-2 US-CO-1 US-IL-1 US-KS-2
+  US-MO-2 US-NC-2 US-NE-1 US-TX-3 US-WA-1
+)
+
+pick_datacenter_for_gpu() {  # $1=gpuId -> a volume-capable DC id with GPU stock, or empty
   local gpu_id="$1"
+  local dc_list; dc_list=$(printf '%s\n' "${VOLUME_CAPABLE_DCS[@]}")
   gpu_list_json | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
+volume_capable = set('''$dc_list'''.split())
 target = '${gpu_id}'
 match = next((g for g in data if g['gpuId'] == target), None)
 if not match:
     sys.exit(0)
 for dc in match['dataCenterAvailability']:
-    if dc['stockStatus'] != 'none':
+    if dc['stockStatus'] != 'none' and dc['dataCenterId'] in volume_capable:
         print(dc['dataCenterId']); break
 "
 }
@@ -134,24 +163,52 @@ ensure_volume() {  # $1=vol name $2=size GB $3=gpuId -> prints volume id (info g
   if [[ -n "${vol_id}" ]]; then echo "${vol_id}"; return 0; fi
   local dc; dc=$(pick_datacenter_for_gpu "${gpu_id}")
   if [[ -z "${dc}" ]]; then
-    echo "!! Could not find a data center with stock for '${gpu_id}' to place the volume in." >&2
+    echo "!! Could not find a volume-capable data center with stock for '${gpu_id}'." >&2
     exit 1
   fi
   echo ">> Creating Network Volume '${vol_name}' (${size}GB) in ${dc}..." >&2
-  runpodctl network-volume create --name "${vol_name}" --size "${size}" --data-center-id "${dc}" >&2
-  get_volume_id "${vol_name}"
+  local create_output create_exit
+  create_output=$(runpodctl network-volume create --name "${vol_name}" --size "${size}" --data-center-id "${dc}" 2>&1)
+  create_exit=$?
+  echo "${create_output}" >&2
+
+  # Don't trust the exit code alone - verify the volume genuinely exists now.
+  # This is what silently failed before: an error response was printed but
+  # never checked, and an empty vol_id got passed straight into pod create,
+  # producing a pod with NO volume attached and no warning about it.
+  vol_id=$(get_volume_id "${vol_name}")
+  if [[ ${create_exit} -ne 0 ]] || [[ -z "${vol_id}" ]]; then
+    echo "!! Volume creation failed or could not be verified. Refusing to proceed -" >&2
+    echo "   creating a pod without a real volume would silently lose data on stop/delete." >&2
+    exit 1
+  fi
+  echo "${vol_id}"
 }
 
-create_pod_attached() {  # $1=pod_name $2=gpu_id $3=volume_id $4=docker_args
-  runpodctl pod create \
-    --name "$1" \
-    --gpu-id "$2" \
-    --image "${DEFAULT_IMAGE}" \
-    --container-disk-in-gb "${CONTAINER_DISK_GB}" \
-    --network-volume-id "$3" \
-    --volume-mount-path "/workspace" \
-    --ports "8888/http,22/tcp" \
-    --docker-args "$4"
+create_pod_attached() {  # $1=pod_name $2=gpu_id $3=volume_id_or_empty $4=docker_args
+  if [[ "${USE_NETWORK_VOLUME}" == "true" ]]; then
+    runpodctl pod create \
+      --name "$1" \
+      --gpu-id "$2" \
+      --image "${DEFAULT_IMAGE}" \
+      --container-disk-in-gb "${CONTAINER_DISK_GB}" \
+      --network-volume-id "$3" \
+      --volume-mount-path "/workspace" \
+      --ports "8888/http,22/tcp" \
+      --docker-args "$4"
+  else
+    # Inline volume - no --network-volume-id at all, works in any datacenter
+    # with GPU stock. Dies with the pod on delete/terminate (survives stop).
+    runpodctl pod create \
+      --name "$1" \
+      --gpu-id "$2" \
+      --image "${DEFAULT_IMAGE}" \
+      --container-disk-in-gb "${CONTAINER_DISK_GB}" \
+      --volume-in-gb "${VOLUME_GB}" \
+      --volume-mount-path "/workspace" \
+      --ports "8888/http,22/tcp" \
+      --docker-args "$4"
+  fi
 }
 
 # ---------- subcommands ----------
@@ -169,7 +226,18 @@ cmd_create() {
     exit 1
   fi
 
-  local vol_id; vol_id=$(ensure_volume "${vol_name}" "${VOLUME_GB}" "${gpu_id}")
+  local vol_id=""
+  if [[ "${USE_NETWORK_VOLUME}" == "true" ]]; then
+    vol_id=$(ensure_volume "${vol_name}" "${VOLUME_GB}" "${gpu_id}")
+    if [[ -z "${vol_id}" ]]; then
+      echo "!! No volume ID returned - refusing to create a pod without persistent storage."
+      exit 1
+    fi
+  else
+    echo ">> USE_NETWORK_VOLUME=false: using an inline volume (no volume-capable-datacenter"
+    echo "   constraint, but does NOT survive pod delete/terminate - only stop)."
+    echo "   Back up checkpoints externally, e.g. via backup_watch.sh, not relying on this disk alone."
+  fi
   # NOTE: dependency install skipped on purpose - Jupyter launches right after
   # clone. Run `pip install -r requirements.txt` manually from a Jupyter
   # terminal (or the notebook's own install cell) once you actually need it.
@@ -209,6 +277,15 @@ cmd_resize() {
   local pod_name="${1:?Usage: $0 resize <pod_name> <new_gpu_id>}"
   local new_gpu="${2:?Usage: $0 resize <pod_name> <new_gpu_id>}"
   local vol_name="${pod_name}-vol"
+
+  if [[ "${USE_NETWORK_VOLUME}" != "true" ]]; then
+    echo "!! resize is unsafe in USE_NETWORK_VOLUME=false mode: it deletes the pod,"
+    echo "   which destroys the inline volume's data with no way to preserve it."
+    echo "   Back up what you need first (backup_watch.sh / manual rsync), then use"
+    echo "   'destroy' + 'create' explicitly - that makes the data loss a conscious"
+    echo "   step instead of something resize does silently."
+    exit 1
+  fi
 
   local pod_id; pod_id=$(get_pod_id "${pod_name}")
   [[ -z "${pod_id}" ]] && { echo "!! No pod named '${pod_name}' found."; exit 1; }

@@ -84,12 +84,14 @@ OCR_PROMPT = (
     "Preserve original archaic spelling, capitalization, and punctuation - "
     "do not modernize or standardize the text.\n\n"
     "Specific conventions to preserve exactly:\n"
-    "- Superscript abbreviations: write a caret before the superscript letters, "
-    "e.g. \"w^ch\" (which), \"s^d\" (said), \"m^r\" (master), \"25^th\" (25th).\n"
     "- Keep \"&\" as \"&\" - do not expand it to \"and\".\n"
     "- Preserve both Arabic numerals (1674) and Roman numerals (xvi) exactly as "
     "written - do not convert between them.\n"
-    "- If a tilde (~) appears in the source, reproduce it as written.\n\n"
+    "- Monetary amounts are written out in full words (e.g. \"Five hundred pounds "
+    "Currant mony\", \"Sterling money of Barbados\") - never use £ or $ symbols.\n"
+    "- If a caret (^), tilde (~), or a run of repeated letters like \"xx\" or "
+    "\"xxx\" appears in the source, reproduce it exactly as written and in its "
+    "exact position, rather than expanding, interpreting, or omitting it.\n\n"
     "Output only the transcription, with no additional commentary."
 )
 
