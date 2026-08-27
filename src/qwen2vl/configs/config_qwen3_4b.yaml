@@ -97,8 +97,8 @@ training:
   # trade-off was avoided deliberately.
   max_seq_length: 3584
 
-  eval_steps: 50
-  save_steps: 50
+  eval_steps: 100
+  save_steps: 100
   save_total_limit: 3
 
   # Compute CER+WER for monitoring (competition metric)
