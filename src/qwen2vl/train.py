@@ -359,11 +359,24 @@ class ImageAugmenter:
         itself validated against a working baseline, and this run needs a
         clean, isolated comparison against the recipe that's actually proven.
 
-        4-CLASS SYSTEM (thresholds: 19, 37, 42):
-          Excellent (<19):   synthesize degradation (1.2x blur/noise/color) - pristine docs can take it
-          Medium (19-37):    standard augmentation (all multipliers = 1.0)
-          Poor (37-42):      DISABLE degradation, INCREASE geometric 1.5x
-          Very Poor (>42):   DISABLE degradation, MAXIMUM geometric 2.5x
+        4-CLASS SYSTEM (thresholds: 8.08, 23.42, 26.15):
+        RECALIBRATED (2026-08-27) - the original thresholds (19/37/42) were
+        calibrated against a condition_score distribution that no longer
+        matches document_condition.csv (median=9.11, 90th pctile=25.96 -
+        nowhere near 37/42). Under the old thresholds, actual tier membership
+        was Excellent=73.1% (vs documented 22.9%), Medium=25.6% (vs 57.6%),
+        Poor=0.9% (vs 10.1%), Very Poor=0.4% (vs 9.4%) - the Poor/Very-Poor
+        protective behavior (disable degradation, boost geometric for
+        damaged docs) was reaching ~1.3% of the dataset instead of the
+        intended ~19.5%. These new thresholds are the exact percentiles
+        (22.9th / 80.5th / 90.6th) of the real train-split distribution,
+        reproducing the documented percentages precisely - verified directly
+        against document_condition.csv, not assumed.
+
+          Excellent (<8.08):          synthesize degradation (1.2x blur/noise/color) - pristine docs can take it
+          Medium (8.08-23.42):        standard augmentation (all multipliers = 1.0)
+          Poor (23.42-26.15):         DISABLE degradation, INCREASE geometric 1.5x
+          Very Poor (>=26.15):        DISABLE degradation, MAXIMUM geometric 2.5x
 
         p_morphology and p_local_degradation (both added after this system was
         last used) are gated on p_degradation_mult, same as blur/noise/old
@@ -379,7 +392,7 @@ class ImageAugmenter:
             return img
 
         if condition_score is not None:
-            if condition_score < 19:  # Excellent condition
+            if condition_score < 8.08:  # Excellent condition
                 p_degradation_mult = 1.2  # Add blur, noise, color variance
                 p_elastic_mult = 1.0
                 p_resolution_mult = 1.0
@@ -390,7 +403,7 @@ class ImageAugmenter:
                 p_contrast_mult = 1.0
                 elastic_alpha_override = self.elastic_alpha
 
-            elif condition_score < 37:  # Medium condition
+            elif condition_score < 23.42:  # Medium condition
                 p_degradation_mult = 1.0
                 p_elastic_mult = 1.0
                 p_resolution_mult = 1.0
@@ -401,7 +414,7 @@ class ImageAugmenter:
                 p_contrast_mult = 1.0
                 elastic_alpha_override = self.elastic_alpha
 
-            elif condition_score < 42:  # Poor condition (rare)
+            elif condition_score < 26.15:  # Poor condition (rare)
                 p_degradation_mult = 0.0  # Already degraded/faded
                 p_elastic_mult = 1.5
                 p_resolution_mult = 1.5
