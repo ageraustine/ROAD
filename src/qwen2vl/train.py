@@ -394,6 +394,7 @@ class ImageAugmenter:
         if condition_score is not None:
             if condition_score < 8.08:  # Excellent condition
                 p_degradation_mult = 1.2  # Add blur, noise, color variance
+                p_soft_degradation_mult = 1.2  # see note below - same as p_degradation_mult except at Poor/Very Poor
                 p_elastic_mult = 1.0
                 p_resolution_mult = 1.0
                 p_rotation_mult = 1.0
@@ -405,6 +406,7 @@ class ImageAugmenter:
 
             elif condition_score < 23.42:  # Medium condition
                 p_degradation_mult = 1.0
+                p_soft_degradation_mult = 1.0
                 p_elastic_mult = 1.0
                 p_resolution_mult = 1.0
                 p_rotation_mult = 1.0
@@ -415,7 +417,19 @@ class ImageAugmenter:
                 elastic_alpha_override = self.elastic_alpha
 
             elif condition_score < 26.15:  # Poor condition (rare)
-                p_degradation_mult = 0.0  # Already degraded/faded
+                # SPLIT (2026-08-27): p_degradation_mult stays a hard 0 - it
+                # gates p_morphology only now, and erosion can genuinely
+                # remove already-faint strokes on a document that's damaged
+                # for real (same risk the field-specific system's
+                # text_contrast gate protected against, before that system
+                # was reverted). p_soft_degradation_mult gates blur/noise/
+                # local_degradation instead: reduced, not zero - none of the
+                # three risk erasing content the way erosion does, and full
+                # suppression here meant ~19.5% of the dataset (Poor+Very
+                # Poor combined) got zero anti-memorization benefit from
+                # three of the four augmentations meant to fight it.
+                p_degradation_mult = 0.0  # p_morphology only - already degraded/faded
+                p_soft_degradation_mult = 0.4  # blur/noise/local_degradation - reduced, not silenced
                 p_elastic_mult = 1.5
                 p_resolution_mult = 1.5
                 p_rotation_mult = 1.5
@@ -426,7 +440,8 @@ class ImageAugmenter:
                 elastic_alpha_override = self.elastic_alpha * 1.4
 
             else:  # Very Poor condition (rare outliers)
-                p_degradation_mult = 0.0
+                p_degradation_mult = 0.0  # p_morphology only
+                p_soft_degradation_mult = 0.25  # more reduced than Poor, still non-zero
                 p_elastic_mult = 2.5
                 p_resolution_mult = 2.5
                 p_rotation_mult = 2.0
@@ -440,6 +455,7 @@ class ImageAugmenter:
         else:
             # No condition score - use standard augmentation
             p_degradation_mult = 1.0
+            p_soft_degradation_mult = 1.0
             p_elastic_mult = 1.0
             p_resolution_mult = 1.0
             p_rotation_mult = 1.0
@@ -450,20 +466,33 @@ class ImageAugmenter:
             hue_sat_mult = 1.0
             elastic_alpha_override = self.elastic_alpha
 
-        # DEGRADATION augmentations (disabled for poor-condition docs)
-        if random.random() < (self.p_blur * p_degradation_mult):
+        # DEGRADATION augmentations. Uses p_soft_degradation_mult, not
+        # p_degradation_mult - see the SPLIT note in the tier block above:
+        # blur/noise don't risk erasing content the way erosion does, so
+        # they're reduced (not silenced) for Poor/Very-Poor condition docs.
+        if random.random() < (self.p_blur * p_soft_degradation_mult):
             img = img.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.5, 1.5)))
 
-        if random.random() < (self.p_noise * p_degradation_mult):
+        if random.random() < (self.p_noise * p_soft_degradation_mult):
             arr = np.array(img).astype(np.float32)
             arr += np.random.normal(0, random.uniform(5, 15), arr.shape)
             img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
         # SCANNER-SETTING augmentations (reduced for poor-condition docs)
-        if random.random() < (self.p_brightness * p_brightness_mult):
+        # MUTUALLY EXCLUSIVE (2026-08-27): brightness and contrast firing
+        # together compounds toward clipping - measured on a real sample,
+        # worst case (both roll to 1.2) took near-white background pixels
+        # from 0.1% to 55.7% of the image, destroying paper texture/color
+        # variation neither was individually calibrated to risk. A single
+        # shared draw picks at most one; each keeps its original marginal
+        # firing probability (p_brightness, p_contrast), only their joint
+        # probability changes (from p_brightness*p_contrast to exactly 0).
+        r = random.random()
+        p_b = self.p_brightness * p_brightness_mult
+        p_c = self.p_contrast * p_contrast_mult
+        if r < p_b:
             img = ImageEnhance.Brightness(img).enhance(random.uniform(0.8, 1.2))
-
-        if random.random() < (self.p_contrast * p_contrast_mult):
+        elif r < p_b + p_c:
             img = ImageEnhance.Contrast(img).enhance(random.uniform(0.8, 1.2))
 
         # GEOMETRIC augmentations (INCREASED for poor-condition docs)
@@ -573,9 +602,13 @@ class ImageAugmenter:
 
         # DEGRADATION: Localized noise/shadow (partial stain, fold shadow, ink
         # bleed patch) confined to a soft-edged band, not the whole canvas.
-        # Gated on p_degradation_mult, same as blur/noise/morphology (composite
-        # condition_score system, reverted 2026-08-27 to match known-good baseline).
-        if random.random() < (self.p_local_degradation * p_degradation_mult):
+        # Uses p_soft_degradation_mult, not p_degradation_mult (SPLIT
+        # 2026-08-27) - unlike morphology, this doesn't risk erasing content;
+        # if anything, forcing context-reliance matters more, not less, for
+        # documents that already have real damage the model will need to
+        # read through at inference time. Reduced-not-silenced for
+        # Poor/Very-Poor rather than fully suppressed.
+        if random.random() < (self.p_local_degradation * p_soft_degradation_mult):
             img = self._apply_local_degradation(img)
 
         return img
