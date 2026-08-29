@@ -31,7 +31,7 @@ data:
   #         - Full 36-bin stratification > preventing 2% text overlap
 
 training:
-  output_dir: "/content/drive/MyDrive/road-training/outputs/qwen3-8b"
+  output_dir: "/content/drive/MyDrive/road-training/outputs/qwen3-8b-v2"
 
   batch_size: 2
   eval_batch_size: 2
@@ -52,11 +52,7 @@ training:
   # Vision tower needs capacity for new script; LLM just needs task adaptation
   lora_r: 16  # Base rank for LLM
   lora_alpha: 32
-  lora_dropout: 0.1  # Elevated from the 0.05 used elsewhere - already-increased
-                     # regularization; overfitting was still observed at this
-                     # setting (train_loss 0.07 vs eval_loss 0.55 by step 1100
-                     # in the run this config produced), so this alone wasn't
-                     # sufficient - vision rank (below) is the next lever.
+  lora_dropout: 0.05 
   use_rslora: true  # Rank-Stabilized LoRA
   use_dora: false
   loraplus_lr_ratio: null  # DISABLED - logging anomaly suggests possible bug (0 A params, 368 B params)
@@ -65,15 +61,15 @@ training:
   # r=32 a stale comment here previously claimed - rank_pattern below is
   # ground truth). ~80M params.
   rank_pattern:
-    qkv: 64         # Vision attention (critical for stroke patterns)
-    proj: 64        # Vision output projection
-    linear_fc1: 64  # Vision MLP layer 1 (learns visual features)
-    linear_fc2: 64  # Vision MLP layer 2 (learns visual features)
+    qkv: 32         # Vision attention (critical for stroke patterns)
+    proj: 32        # Vision output projection
+    linear_fc1: 32  # Vision MLP layer 1 (learns visual features)
+    linear_fc2: 32  # Vision MLP layer 2 (learns visual features)
   alpha_pattern:
-    qkv: 128        # Scale alpha proportionally (2*rank)
-    proj: 128
-    linear_fc1: 128
-    linear_fc2: 128
+    qkv: 64        # Scale alpha proportionally (2*rank)
+    proj: 64
+    linear_fc1: 64
+    linear_fc2: 64
 
   # Target modules - Covers vision tower + DeepStack mergers + LLM
   # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
@@ -83,26 +79,6 @@ training:
   lora_modules_to_save: null  # Merger covered in target_modules regex
 
   max_pixels: 2016000
-  # At Qwen3-VL's 32x spatial compression, max_pixels alone produces ~1,969
-  # vision tokens. The default max_seq_length (2048, unset until now) left
-  # under 80 tokens for prompt + assistant header + target text combined,
-  # causing truncation to cut off the assistant header on longer samples -
-  # the "Could not locate the assistant header" crash.
-  #
-  # Measured directly (check_seq_lengths.py) across 50/4098 samples: min=93,
-  # median=116, p95=2191, max=2861 - highly bimodal since there's no
-  # min_pixels floor, so small source images stay small (few vision tokens)
-  # while large scans approach the max_pixels ceiling (many tokens). This
-  # wasn't a Colab-vs-RunPod issue - max_seq_length was tuned for
-  # Qwen2-VL-7B (the original notebook's model); Qwen3-VL's DeepStack
-  # multi-level feature fusion produces more vision tokens for the same
-  # max_pixels, and was never re-validated after the model switch.
-  #
-  # 3584 gives real margin above the measured max, since only ~1% of the
-  # dataset was sampled - the true max across all ~4,100 samples could be
-  # higher. Raising this (not lowering max_pixels) preserves resolution/
-  # legibility - see the augmentation strategy notes above for why that
-  # trade-off was avoided deliberately.
   max_seq_length: 3584
 
   eval_steps: 100
@@ -279,7 +255,7 @@ augmentation:
   local_soft_edge_px: 8
 
 inference:
-  checkpoint: "/content/drive/MyDrive/road-training/outputs/qwen3-8b-full/best"  # matches training.output_dir + /best (k_folds=1, no fold_N subdir)
+  checkpoint: "/content/drive/MyDrive/road-training/outputs/qwen3-8b-v2/best"  # matches training.output_dir + /best (k_folds=1, no fold_N subdir)
   output_csv: "submission_full.csv"
   max_new_tokens: 128  # Targets max at 120 chars - prevents loops structurally
   num_beams: 5

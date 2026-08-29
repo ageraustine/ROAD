@@ -348,6 +348,121 @@ class ImageAugmenter:
 
         return tuple(mean_color)
 
+    # Tier presets for the composite condition_score system. Values match
+    # what was previously hardcoded per-branch; min_pixels for the Medium
+    # tier resolves to self.min_pixels_ratio (a config value), so it's filled
+    # in at call time in _get_tier_params rather than stored as a literal here.
+    #
+    # RECALIBRATED (2026-08-29): condition_score's formula changed - text_contrast
+    # (previously 35% weight, the single largest term) was dropped from the
+    # composite in analyze_document_condition.py because it correlated -0.47
+    # with texture_degradation and -0.34 with the old composite itself (rougher
+    # paper background was inflating its gradient statistic and making faded
+    # text read as MORE legible, backwards from intent). Remaining weights
+    # (tears_and_holes/paper_color_variance/texture_degradation/stains) were
+    # proportionally rescaled from 0.25/0.20/0.10/0.10 to sum to 1.0.
+    #
+    # This changed the condition_score distribution materially, not just its
+    # scale: old median=9.11 / 90th pctile=25.96 -> new median=8.95 / 90th
+    # pctile=14.83 (std compressed from 8.15 to 5.35 - text_contrast was
+    # specifically inflating the upper tail). Old-vs-new score correlation is
+    # 0.77 - related but a genuinely different ranking, not a rescaling of the
+    # same ranking. The boundaries below are the new score's exact 22.9th/
+    # 80.5th/90.6th percentiles - the SAME percentile targets as before, just
+    # recomputed against the new distribution - so tier population fractions
+    # are unchanged (~23.1%/57.4%/10.1%/9.4%) even though the score that
+    # produces them is different. Verified directly against the recalculated
+    # document_condition.csv, not assumed.
+    _TIER_BOUNDARIES = [6.90, 12.30, 15.04]
+    _TIER_SMOOTH_HALF_WIDTH = 1.0  # smoothing window is +/- this, i.e. 2.0 wide total
+    _TIER_PRESETS = [
+        {"degradation": 1.2, "soft_degradation": 1.2, "elastic": 1.0, "resolution": 1.0,
+         "rotation": 1.0, "min_pixels": 0.75, "color": 1.2, "brightness": 1.0,
+         "contrast": 1.0, "elastic_alpha_mult": 1.0},   # Excellent
+        {"degradation": 1.0, "soft_degradation": 1.0, "elastic": 1.0, "resolution": 1.0,
+         "rotation": 1.0, "min_pixels": None, "color": 1.0, "brightness": 1.0,
+         "contrast": 1.0, "elastic_alpha_mult": 1.0},   # Medium (min_pixels resolved at call time)
+        {"degradation": 0.0, "soft_degradation": 0.4, "elastic": 1.5, "resolution": 1.5,
+         "rotation": 1.5, "min_pixels": 0.65, "color": 0.0, "brightness": 0.5,
+         "contrast": 0.5, "elastic_alpha_mult": 1.4},   # Poor
+        {"degradation": 0.0, "soft_degradation": 0.25, "elastic": 2.5, "resolution": 2.5,
+         "rotation": 2.0, "min_pixels": 0.5, "color": 0.0, "brightness": 0.3,
+         "contrast": 0.3, "elastic_alpha_mult": 1.8},   # Very Poor
+    ]
+
+    def _get_tier_params(self, condition_score: float) -> dict:
+        """
+        Condition-tier multipliers, with narrow-band linear smoothing across
+        each boundary instead of a hard step (added 2026-08-27).
+
+        Measured against the recalculated document_condition.csv (text_contrast
+        excluded from condition_score, 2026-08-29): condition_score is still
+        heavily right-skewed (new median=8.95, vs. old median=9.11 - median
+        barely moved even though the upper tail compressed a lot), so tight
+        smoothing around the Excellent/Medium boundary still matters for the
+        same reason as before: most documents cluster near it, so a hard step
+        would give near-identical documents a large, discontinuous treatment
+        jump. This interpolates linearly within +/-_TIER_SMOOTH_HALF_WIDTH of
+        each boundary; outside that window, behavior is identical to the
+        original hard-tier system.
+
+        Boundary gaps (6.90, 12.30, 15.04) are all > 2x the smoothing half-
+        width (5.40 and 2.74 respectively), so windows still never overlap
+        and at most one boundary is ever being smoothed for a given score -
+        re-verified against the new, more compressed boundary spacing (old
+        gaps were 15.34 and 2.73; the second gap is nearly unchanged, the
+        first shrank substantially but is still comfortably clear of overlap).
+        """
+        presets = self._TIER_PRESETS
+        boundaries = self._TIER_BOUNDARIES
+        hw = self._TIER_SMOOTH_HALF_WIDTH
+
+        def resolved(preset):
+            # Medium's min_pixels is config-dependent, not a literal
+            p = dict(preset)
+            if p["min_pixels"] is None:
+                p["min_pixels"] = self.min_pixels_ratio
+            return p
+
+        for i, b in enumerate(boundaries):
+            if abs(condition_score - b) < hw:
+                t = (condition_score - (b - hw)) / (2 * hw)
+                t = max(0.0, min(1.0, t))
+                lower, upper = resolved(presets[i]), resolved(presets[i + 1])
+                return {k: lower[k] * (1 - t) + upper[k] * t for k in lower}
+
+        idx = sum(1 for b in boundaries if condition_score >= b)
+        return resolved(presets[idx])
+
+    @staticmethod
+    def _one_of(candidates: list) -> "callable | None":
+        """
+        Standard OneOf composition (Albumentations-style): given a list of
+        (probability, transform_fn) pairs, fire AT MOST ONE of them.
+
+        The group fires with probability min(sum(probabilities), 1.0); given
+        that it fires, the specific transform is chosen with probability
+        proportional to its own configured probability. This preserves each
+        transform's individually-tuned probability as a *relative weight*
+        while guaranteeing transforms in the same group can never compound
+        on the same image - unlike independent `if random.random() < p`
+        checks, which allow every candidate to fire simultaneously.
+
+        Returns the chosen transform_fn (to be applied to img), or None if
+        the group didn't fire. Candidates with probability <= 0 are ignored.
+        """
+        candidates = [(p, fn) for p, fn in candidates if p > 0]
+        total = sum(p for p, _ in candidates)
+        if total <= 0 or random.random() >= min(total, 1.0):
+            return None
+        r = random.uniform(0, total)
+        upto = 0.0
+        for p, fn in candidates:
+            upto += p
+            if r <= upto:
+                return fn
+        return candidates[-1][1]  # floating-point fallback
+
     def __call__(self, img: Image.Image, condition_score: float = None) -> Image.Image:
         """
         Apply augmentation with optional adaptive strength based on document condition.
@@ -359,30 +474,67 @@ class ImageAugmenter:
         itself validated against a working baseline, and this run needs a
         clean, isolated comparison against the recipe that's actually proven.
 
-        4-CLASS SYSTEM (thresholds: 8.08, 23.42, 26.15):
-        RECALIBRATED (2026-08-27) - the original thresholds (19/37/42) were
-        calibrated against a condition_score distribution that no longer
-        matches document_condition.csv (median=9.11, 90th pctile=25.96 -
-        nowhere near 37/42). Under the old thresholds, actual tier membership
-        was Excellent=73.1% (vs documented 22.9%), Medium=25.6% (vs 57.6%),
-        Poor=0.9% (vs 10.1%), Very Poor=0.4% (vs 9.4%) - the Poor/Very-Poor
-        protective behavior (disable degradation, boost geometric for
-        damaged docs) was reaching ~1.3% of the dataset instead of the
-        intended ~19.5%. These new thresholds are the exact percentiles
-        (22.9th / 80.5th / 90.6th) of the real train-split distribution,
-        reproducing the documented percentages precisely - verified directly
-        against document_condition.csv, not assumed.
+        4-CLASS SYSTEM (thresholds: 6.90, 12.30, 15.04):
+        RECALIBRATED TWICE now. First (2026-08-27): the original thresholds
+        (19/37/42) were calibrated against a condition_score distribution
+        that no longer matched document_condition.csv (then: median=9.11,
+        90th pctile=25.96 - nowhere near 37/42), replaced with 8.08/23.42/
+        26.15 - the exact 22.9th/80.5th/90.6th percentiles of that
+        distribution. Second (2026-08-29): condition_score's own formula
+        changed - text_contrast (previously 35% weight, the single largest
+        term) was dropped from the composite because it correlated -0.47
+        with texture_degradation and -0.34 with the old composite (rougher
+        paper background was inflating its gradient statistic, making faded
+        text read as MORE legible - backwards from intent). That shifted the
+        distribution again (new median=8.95, 90th pctile=14.83 - the upper
+        tail compressed substantially since text_contrast had been inflating
+        it specifically), so the boundaries were recomputed a second time at
+        the SAME percentile targets (22.9th/80.5th/90.6th) against the new
+        distribution, landing at 6.90/12.30/15.04. Tier population fractions
+        are therefore still ~23.1%/57.4%/10.1%/9.4% - unchanged from the
+        original design intent - even though both the score formula and the
+        numeric boundaries that produce those fractions have now changed
+        twice. Verified directly against the recalculated document_condition.csv,
+        not assumed.
 
-          Excellent (<8.08):          synthesize degradation (1.2x blur/noise/color) - pristine docs can take it
-          Medium (8.08-23.42):        standard augmentation (all multipliers = 1.0)
-          Poor (23.42-26.15):         DISABLE degradation, INCREASE geometric 1.5x
-          Very Poor (>=26.15):        DISABLE degradation, MAXIMUM geometric 2.5x
+          Excellent (<6.90):          synthesize degradation (1.2x blur/noise/color) - pristine docs can take it
+          Medium (6.90-12.30):        standard augmentation (all multipliers = 1.0)
+          Poor (12.30-15.04):         DISABLE degradation, INCREASE geometric 1.5x
+          Very Poor (>=15.04):        DISABLE degradation, MAXIMUM geometric 2.5x
 
         p_morphology and p_local_degradation (both added after this system was
         last used) are gated on p_degradation_mult, same as blur/noise/old
         p_resolution/p_jpeg - consistent with how this system already groups
         every DEGRADATION-class augmentation under one shared multiplier,
         rather than the field-specific per-metric gates they had before.
+
+        COMPOSITION STRUCTURE (restructured 2026-08-29): transforms are now
+        organized into three mutually-exclusive OneOf groups, applied in
+        canonical order - GEOMETRIC (spatial remap) -> PHOTOMETRIC (global
+        intensity/color) -> DEGRADATION (noise/blur/local damage) - instead
+        of ~11 independent Bernoulli draws. Two problems this fixes:
+
+        1. Order: blur/noise/morphology used to run BEFORE rotate/shear,
+           so those geometric ops were resampling already-degraded pixels,
+           then elastic warp degraded them again later. Textbook order does
+           all spatial remapping first (on clean pixels), then photometric,
+           then noise/blur last, since noise/blur are meant to model the
+           final acquisition step, not something later ops smear further.
+        2. Compounding: previously up to 4 geometric ops (rotate, shear,
+           elastic, resolution-jitter) could all fire on one image - for
+           Very-Poor-tier docs, each of those probabilities is independently
+           *increased* (up to 2.5x), making simultaneous multi-transform
+           stacking on already-fragile documents more likely, not less. Each
+           group here fires at most one transform (see `_one_of`), so a
+           single image now receives at most one geometric + one photometric
+           + one degradation op, regardless of how many are "eligible".
+
+        Every existing probability, tier multiplier, and per-transform
+        rationale (soft vs. hard degradation split, brightness/contrast
+        mutual exclusivity, etc.) is unchanged - only the composition is
+        restructured. Within a group, an individual transform's configured
+        probability still controls its relative odds of being the one that
+        fires; it just can no longer fire alongside its groupmates.
 
         Args:
             img: Input image
@@ -392,65 +544,17 @@ class ImageAugmenter:
             return img
 
         if condition_score is not None:
-            if condition_score < 8.08:  # Excellent condition
-                p_degradation_mult = 1.2  # Add blur, noise, color variance
-                p_soft_degradation_mult = 1.2  # see note below - same as p_degradation_mult except at Poor/Very Poor
-                p_elastic_mult = 1.0
-                p_resolution_mult = 1.0
-                p_rotation_mult = 1.0
-                min_pixels_override = 0.75
-                p_color_mult = 1.2
-                p_brightness_mult = 1.0
-                p_contrast_mult = 1.0
-                elastic_alpha_override = self.elastic_alpha
-
-            elif condition_score < 23.42:  # Medium condition
-                p_degradation_mult = 1.0
-                p_soft_degradation_mult = 1.0
-                p_elastic_mult = 1.0
-                p_resolution_mult = 1.0
-                p_rotation_mult = 1.0
-                min_pixels_override = self.min_pixels_ratio
-                p_color_mult = 1.0
-                p_brightness_mult = 1.0
-                p_contrast_mult = 1.0
-                elastic_alpha_override = self.elastic_alpha
-
-            elif condition_score < 26.15:  # Poor condition (rare)
-                # SPLIT (2026-08-27): p_degradation_mult stays a hard 0 - it
-                # gates p_morphology only now, and erosion can genuinely
-                # remove already-faint strokes on a document that's damaged
-                # for real (same risk the field-specific system's
-                # text_contrast gate protected against, before that system
-                # was reverted). p_soft_degradation_mult gates blur/noise/
-                # local_degradation instead: reduced, not zero - none of the
-                # three risk erasing content the way erosion does, and full
-                # suppression here meant ~19.5% of the dataset (Poor+Very
-                # Poor combined) got zero anti-memorization benefit from
-                # three of the four augmentations meant to fight it.
-                p_degradation_mult = 0.0  # p_morphology only - already degraded/faded
-                p_soft_degradation_mult = 0.4  # blur/noise/local_degradation - reduced, not silenced
-                p_elastic_mult = 1.5
-                p_resolution_mult = 1.5
-                p_rotation_mult = 1.5
-                min_pixels_override = 0.65
-                p_color_mult = 0.0
-                p_brightness_mult = 0.5
-                p_contrast_mult = 0.5
-                elastic_alpha_override = self.elastic_alpha * 1.4
-
-            else:  # Very Poor condition (rare outliers)
-                p_degradation_mult = 0.0  # p_morphology only
-                p_soft_degradation_mult = 0.25  # more reduced than Poor, still non-zero
-                p_elastic_mult = 2.5
-                p_resolution_mult = 2.5
-                p_rotation_mult = 2.0
-                min_pixels_override = 0.5
-                p_color_mult = 0.0
-                p_brightness_mult = 0.3
-                p_contrast_mult = 0.3
-                elastic_alpha_override = self.elastic_alpha * 1.8
-
+            params = self._get_tier_params(condition_score)
+            p_degradation_mult = params["degradation"]
+            p_soft_degradation_mult = params["soft_degradation"]
+            p_elastic_mult = params["elastic"]
+            p_resolution_mult = params["resolution"]
+            p_rotation_mult = params["rotation"]
+            min_pixels_override = params["min_pixels"]
+            p_color_mult = params["color"]
+            p_brightness_mult = params["brightness"]
+            p_contrast_mult = params["contrast"]
+            elastic_alpha_override = self.elastic_alpha * params["elastic_alpha_mult"]
             hue_sat_mult = 1.0  # not part of this system - color_mult covers color jitter entirely
         else:
             # No condition score - use standard augmentation
@@ -466,46 +570,119 @@ class ImageAugmenter:
             hue_sat_mult = 1.0
             elastic_alpha_override = self.elastic_alpha
 
-        # DEGRADATION augmentations. Uses p_soft_degradation_mult, not
-        # p_degradation_mult - see the SPLIT note in the tier block above:
-        # blur/noise don't risk erasing content the way erosion does, so
-        # they're reduced (not silenced) for Poor/Very-Poor condition docs.
-        if random.random() < (self.p_blur * p_soft_degradation_mult):
-            img = img.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.5, 1.5)))
+        # ─── GROUP 1: GEOMETRIC (spatial remap, applied first, on clean pixels) ───
+        # rotate, shear, elastic, resolution-jitter are all coordinate remaps
+        # (no intensity destruction), so they're kept together and increased
+        # for Poor/Very-Poor tiers - but only ONE fires per image now, so
+        # "increased for damaged docs" no longer means "more likely to stack
+        # 3-4 distortions on the same fragile image at once".
+        geo_fn = self._one_of([
+            (self.p_rotate * p_rotation_mult, self._make_rotate_fn()),
+            (self.p_shear, self._make_shear_fn()),  # NOT tier-adaptive by design (scribe slant is damage-independent)
+            (self.p_elastic * p_elastic_mult, lambda im: self._apply_elastic_transform(im, elastic_alpha_override)),
+            (self.p_resolution_jitter * p_resolution_mult, lambda im: self._apply_resolution_jitter(im, min_pixels_override)),
+        ])
+        if geo_fn is not None:
+            img = geo_fn(img)
 
-        if random.random() < (self.p_noise * p_soft_degradation_mult):
-            arr = np.array(img).astype(np.float32)
-            arr += np.random.normal(0, random.uniform(5, 15), arr.shape)
-            img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+        # ─── GROUP 2: PHOTOMETRIC (global intensity/color, applied second) ───
+        # brightness, contrast, color_jitter all shift global tone; kept
+        # mutually exclusive (this is where the brightness/contrast
+        # exclusivity used to live as a special case - now it's just the
+        # general OneOf rule applied to the whole photometric group).
+        photo_fn = self._one_of([
+            (self.p_brightness * p_brightness_mult,
+             lambda im: ImageEnhance.Brightness(im).enhance(random.uniform(0.8, 1.2))),
+            (self.p_contrast * p_contrast_mult,
+             lambda im: ImageEnhance.Contrast(im).enhance(random.uniform(0.8, 1.2))),
+            (self.p_color_jitter * p_color_mult,
+             lambda im: self._apply_color_jitter(im, hue_sat_mult)),
+        ])
+        if photo_fn is not None:
+            img = photo_fn(img)
 
-        # SCANNER-SETTING augmentations (reduced for poor-condition docs)
-        # MUTUALLY EXCLUSIVE (2026-08-27): brightness and contrast firing
-        # together compounds toward clipping - measured on a real sample,
-        # worst case (both roll to 1.2) took near-white background pixels
-        # from 0.1% to 55.7% of the image, destroying paper texture/color
-        # variation neither was individually calibrated to risk. A single
-        # shared draw picks at most one; each keeps its original marginal
-        # firing probability (p_brightness, p_contrast), only their joint
-        # probability changes (from p_brightness*p_contrast to exactly 0).
-        r = random.random()
-        p_b = self.p_brightness * p_brightness_mult
-        p_c = self.p_contrast * p_contrast_mult
-        if r < p_b:
-            img = ImageEnhance.Brightness(img).enhance(random.uniform(0.8, 1.2))
-        elif r < p_b + p_c:
-            img = ImageEnhance.Contrast(img).enhance(random.uniform(0.8, 1.2))
+        # ─── GROUP 3: DEGRADATION / NOISE (acquisition artifacts, applied last) ───
+        # blur/noise/local-degradation use p_soft_degradation_mult (reduced,
+        # not silenced, for Poor/Very-Poor - see SPLIT note above); morphology/
+        # old-resolution/jpeg use the full p_degradation_mult (zeroed for
+        # Poor/Very-Poor). Different probabilities within the same group is
+        # exactly what OneOf's weighting is for - each keeps its own relative
+        # likelihood of being the one degradation that fires.
+        degrade_fn = self._one_of([
+            (self.p_blur * p_soft_degradation_mult, self._make_blur_fn()),
+            (self.p_noise * p_soft_degradation_mult, self._make_noise_fn()),
+            (self.p_morphology * p_degradation_mult, self._make_morphology_fn()),
+            (self.p_resolution * p_degradation_mult, self._make_old_resolution_fn()),  # legacy path, 0.0 by default
+            (self.p_jpeg * p_degradation_mult, self._make_jpeg_fn()),  # legacy path, 0.0 by default
+            (self.p_local_degradation * p_soft_degradation_mult, lambda im: self._apply_local_degradation(im)),
+        ])
+        if degrade_fn is not None:
+            img = degrade_fn(img)
 
-        # GEOMETRIC augmentations (INCREASED for poor-condition docs)
-        if random.random() < (self.p_rotate * p_rotation_mult):
+        return img
+
+    # ─────────────────────────────────────────────────────────────
+    # Individual transform factories, used as OneOf candidates above.
+    # Each returns a closure `img -> img` so it can be passed to _one_of
+    # without firing immediately. Logic is unchanged from the original
+    # inline blocks - only extracted so they compose instead of each
+    # having its own independent `if random.random() < p` gate.
+    # ─────────────────────────────────────────────────────────────
+
+    def _make_rotate_fn(self):
+        def _rotate(img: Image.Image) -> Image.Image:
             angle = random.uniform(-self.max_rotation, self.max_rotation)
             # REFINEMENT: Use sampled background color instead of white + expand to prevent clipping
             bg_color = self._sample_background_color(img)
-            img = img.rotate(angle, fillcolor=bg_color, expand=True, resample=Image.BICUBIC)
+            return img.rotate(angle, fillcolor=bg_color, expand=True, resample=Image.BICUBIC)
+        return _rotate
 
-        # DEGRADATION: Morphological ops (models ink thickness, pen pressure)
-        # Gated on p_degradation_mult, same as blur/noise (composite condition_score
-        # system, reverted 2026-08-27 to match the known-good baseline).
-        if random.random() < (self.p_morphology * p_degradation_mult):
+    def _make_shear_fn(self):
+        def _shear(img: Image.Image) -> Image.Image:
+            angle_deg = random.uniform(-self.max_shear, self.max_shear)
+            angle_rad = np.deg2rad(angle_deg)
+            w, h = img.size
+
+            # REFINEMENT: Use sampled background color + expand to prevent text clipping
+            bg_color = self._sample_background_color(img)
+            shear_factor = np.tan(angle_rad)
+
+            # Calculate expanded output size to prevent clipping
+            # Horizontal shear displaces top edge by shear_factor * h
+            offset = abs(shear_factor * h)
+            new_w = int(w + offset)
+
+            # REFINEMENT: recenter regardless of shear direction. Previously the
+            # centering offset only applied when shear_factor > 0, so negative
+            # angles anchored the top row at the original position and pushed
+            # the entire offset into the bottom row instead of splitting it -
+            # same shear magnitude, inconsistent framing depending on sign.
+            # Confirmed empirically: -8deg left top unshifted / bottom +13px,
+            # while +8deg gave a symmetric +6px/-6px split. This makes both
+            # signs symmetric.
+            return img.transform(
+                (new_w, h),
+                Image.AFFINE,
+                (1, shear_factor, -shear_factor * h / 2, 0, 1, 0),
+                fillcolor=bg_color,
+                resample=Image.BICUBIC  # Better quality than BILINEAR for text
+            )
+        return _shear
+
+    def _make_blur_fn(self):
+        def _blur(img: Image.Image) -> Image.Image:
+            return img.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.5, 1.5)))
+        return _blur
+
+    def _make_noise_fn(self):
+        def _noise(img: Image.Image) -> Image.Image:
+            arr = np.array(img).astype(np.float32)
+            arr += np.random.normal(0, random.uniform(5, 15), arr.shape)
+            return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+        return _noise
+
+    def _make_morphology_fn(self):
+        def _morphology(img: Image.Image) -> Image.Image:
             arr = np.array(img)
             h, w = arr.shape[:2]
 
@@ -528,90 +705,27 @@ class ImageAugmenter:
             blur_kernel = max(3, kernel_size // 2)
             blur_kernel = blur_kernel if blur_kernel % 2 == 1 else blur_kernel + 1
             arr = cv2.GaussianBlur(arr, (blur_kernel, blur_kernel), 0.5)
-            img = Image.fromarray(arr)
+            return Image.fromarray(arr)
+        return _morphology
 
-        # GEOMETRIC: Shear/slant jitter (models different scribe handwriting angles)
-        # Keep enabled for all conditions (independent of document damage)
-        if random.random() < self.p_shear:
-            angle_deg = random.uniform(-self.max_shear, self.max_shear)
-            angle_rad = np.deg2rad(angle_deg)
-            w, h = img.size
-
-            # REFINEMENT: Use sampled background color + expand to prevent text clipping
-            bg_color = self._sample_background_color(img)
-            shear_factor = np.tan(angle_rad)
-
-            # Calculate expanded output size to prevent clipping
-            # Horizontal shear displaces top edge by shear_factor * h
-            offset = abs(shear_factor * h)
-            new_w = int(w + offset)
-
-            # REFINEMENT: recenter regardless of shear direction. Previously the
-            # centering offset only applied when shear_factor > 0, so negative
-            # angles anchored the top row at the original position and pushed
-            # the entire offset into the bottom row instead of splitting it -
-            # same shear magnitude, inconsistent framing depending on sign.
-            # Confirmed empirically: -8deg left top unshifted / bottom +13px,
-            # while +8deg gave a symmetric +6px/-6px split. This makes both
-            # signs symmetric.
-            img = img.transform(
-                (new_w, h),
-                Image.AFFINE,
-                (1, shear_factor, -shear_factor * h / 2, 0, 1, 0),
-                fillcolor=bg_color,
-                resample=Image.BICUBIC  # Better quality than BILINEAR for text
-            )
-
-        # DEGRADATION: OLD Resolution jitter (downscale→upscale blur)
-        # Disabled for poor-condition docs (already blurry)
-        if random.random() < (self.p_resolution * p_degradation_mult):
+    def _make_old_resolution_fn(self):
+        """Legacy downscale->upscale blur path (p_resolution=0.0 by default; superseded by _apply_resolution_jitter)."""
+        def _old_resolution(img: Image.Image) -> Image.Image:
             w, h = img.size
             scale = random.uniform(0.6, 1.0)
             new_w, new_h = int(w * scale), int(h * scale)
-
-            # Downscale then upscale back (simulates lower resolution scans)
             img = img.resize((new_w, new_h), Image.BILINEAR)
-            img = img.resize((w, h), Image.BILINEAR)
+            return img.resize((w, h), Image.BILINEAR)
+        return _old_resolution
 
-        # DEGRADATION: JPEG artifacts (models scan compression)
-        # Disabled for poor-condition docs (already have artifacts)
-        if random.random() < (self.p_jpeg * p_degradation_mult):
+    def _make_jpeg_fn(self):
+        def _jpeg(img: Image.Image) -> Image.Image:
             buffer = BytesIO()
             quality = random.randint(60, 90)
             img.save(buffer, format='JPEG', quality=quality)
             buffer.seek(0)
-            img = Image.open(buffer).convert('RGB')
-
-        # GEOMETRIC: Elastic deformation (paper warping/curling during scanning)
-        # INCREASED for poor-condition docs (burnt pages can still curl!)
-        # This simulates physical deformation during scanning, NOT document damage
-        if random.random() < (self.p_elastic * p_elastic_mult):
-            img = self._apply_elastic_transform(img, elastic_alpha_override)
-
-        # DEGRADATION: Color jitter (paper color variance - brown/cream aging)
-        # DISABLED for poor-condition docs (already discolored)
-        # HUE/SATURATION ONLY - NO brightness/contrast (degrades quality)
-        if random.random() < (self.p_color_jitter * p_color_mult):
-            img = self._apply_color_jitter(img, hue_sat_mult)
-
-        # GEOMETRIC: Resolution jitter (prevents overfitting to fixed pixel budget)
-        # INCREASED for poor-condition docs (scan quality varies independently of damage)
-        # Proper implementation: jitter max_pixels, not downscale→upscale blur
-        if random.random() < (self.p_resolution_jitter * p_resolution_mult):
-            img = self._apply_resolution_jitter(img, min_pixels_override)
-
-        # DEGRADATION: Localized noise/shadow (partial stain, fold shadow, ink
-        # bleed patch) confined to a soft-edged band, not the whole canvas.
-        # Uses p_soft_degradation_mult, not p_degradation_mult (SPLIT
-        # 2026-08-27) - unlike morphology, this doesn't risk erasing content;
-        # if anything, forcing context-reliance matters more, not less, for
-        # documents that already have real damage the model will need to
-        # read through at inference time. Reduced-not-silenced for
-        # Poor/Very-Poor rather than fully suppressed.
-        if random.random() < (self.p_local_degradation * p_soft_degradation_mult):
-            img = self._apply_local_degradation(img)
-
-        return img
+            return Image.open(buffer).convert('RGB')
+        return _jpeg
 
     def _apply_elastic_transform(self, img: Image.Image, alpha: float = None) -> Image.Image:
         """
