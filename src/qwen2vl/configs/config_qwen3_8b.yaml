@@ -81,8 +81,8 @@ training:
   max_pixels: 2016000
   max_seq_length: 3584
 
-  eval_steps: 50
-  save_steps: 50
+  eval_steps: 100
+  save_steps: 100
   save_total_limit: 1
 
   # Compute CER+WER for monitoring (competition metric)
