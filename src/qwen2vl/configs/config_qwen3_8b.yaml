@@ -47,8 +47,8 @@ training:
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  lora_r: 8  # Base rank for LLM
-  lora_alpha: 16
+  lora_r: 16  # Base rank for LLM
+  lora_alpha: 32
   lora_dropout: 0.05  # ELITE: Lighter dropout (was 0.1, allow more learning)
   use_rslora: true  # Rank-Stabilized LoRA
   use_dora: false
@@ -104,10 +104,10 @@ augmentation:
   enabled: true  # Document-aware augmentation based on condition analysis
 
   # DEGRADATION augmentations (disabled for poor-condition docs)
-  p_blur: 0.0          # DISABLED - degrades quality
-  p_noise: 0.0         # DISABLED - degrades quality (docs already grainy)
-  p_brightness: 0.0    # DISABLED - degrades quality (docs already faded)
-  p_contrast: 0.0      # DISABLED - degrades quality (changes pixel values)
+  p_blur: 0.15         # ENABLED - mild (0.5-1.5px radius), gated off for poor/very-poor via p_degradation_mult
+  p_noise: 0.15        # ENABLED - mild (σ=5-15), gated off for poor/very-poor via p_degradation_mult
+  p_brightness: 0.3    # RESTORED to the code's own built-in default - realistic scanner exposure variance
+  p_contrast: 0.3      # RESTORED to the code's own built-in default - realistic scanner contrast variance
 
   # GEOMETRIC augmentations (INCREASED 1.5x for poor-condition docs)
   # Pure coordinate remaps, no quality degradation
