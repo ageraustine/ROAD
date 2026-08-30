@@ -30,8 +30,18 @@ import numpy as np
 import cv2  # Used in augmentation code (even if currently disabled)
 from io import BytesIO
 from PIL import Image, ImageFilter, ImageEnhance
-from sklearn.model_selection import train_test_split, StratifiedKFold
 from scipy.ndimage import gaussian_filter  # For elastic deformation
+
+# Data loading + stratification logic lives in data_utils.py (no torch/transformers/
+# peft imports there) so it can be reused by test_stratification.py without pulling
+# in the whole ML stack. REPO_ROOT is defined once there; train.py takes it from
+# there rather than redefining it, so both agree on where "dataset/" and the repo
+# root actually are.
+from data_utils import (
+    REPO_ROOT,
+    load_and_prepare_dataframe,
+    make_splits,
+)
 
 # Suppress verbose warnings and progress bars
 warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
@@ -50,12 +60,6 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model
 
-try:
-    from sklearn.model_selection import StratifiedGroupKFold
-    GROUP_KFOLD_AVAILABLE = True
-except ImportError:
-    GROUP_KFOLD_AVAILABLE = False
-
 import transformers
 
 # v5 dropped a pile of TrainingArguments fields (warmup_ratio, overwrite_output_dir,
@@ -68,7 +72,6 @@ TF_MAJOR = int(transformers.__version__.split(".")[0])
 # ─────────────────────────────────────────────────────────────
 
 SCRIPT_DIR = Path(__file__).parent
-REPO_ROOT = SCRIPT_DIR.parent.parent
 
 OCR_PROMPT = (
     "Transcribe the handwritten text in this image exactly as written. "
@@ -330,44 +333,49 @@ class ImageAugmenter:
         Apply augmentation with optional adaptive strength based on document condition.
 
         STRATEGY (4-class system based on dataset analysis):
-        RECALIBRATED (2026-08-29): thresholds updated to match the latest
-        condition_score distribution. text_contrast (previously 35% weight,
-        the single largest term) was dropped from the composite score
-        upstream because it correlated -0.47 with texture_degradation and
-        -0.34 with the old composite itself (rougher paper background was
-        inflating its gradient statistic, making faded text read as MORE
-        legible - backwards from intent). Remaining weights (tears_and_holes/
-        paper_color_variance/texture_degradation/stains) were proportionally
-        rescaled to sum to 1.0.
+        RECALIBRATED (2026-08-30): thresholds set to match the ACTUAL
+        condition_score distribution in document_condition.csv, computed
+        directly from the uploaded file (n=5472, success==True) rather than
+        assumed or reused from an earlier approximation.
 
-        This changed the condition_score distribution materially: old
-        median=9.11 / 90th pctile=25.96 -> new median=8.95 / 90th pctile=14.83
-        (std compressed from 8.15 to 5.35 - text_contrast was specifically
-        inflating the upper tail). The boundaries below (6.90/12.30/15.04)
-        are the new score's exact 22.9th/80.5th/90.6th percentiles - the SAME
-        percentile targets the original 19/37/42 thresholds were meant to hit
-        - so tier population fractions are unchanged (~23.1%/57.4%/10.1%/9.4%)
-        even though the score producing them is different. Verified directly
-        against the recalculated document_condition.csv, not assumed.
+        IMPORTANT: the composite score in this CSV still includes
+        text_contrast (the column is present; weights were reverse-engineered
+        via least-squares fit against the five raw metrics - exact fit,
+        R²=1.0 - at text_contrast=0.35, paper_color_variance=0.20,
+        tears_and_holes=0.25, texture_degradation=0.10, stains=0.10, matching
+        the pre-recalibration composite, not the text_contrast-excluded one).
+        Confirmed deliberately: this composite is considered more reliable
+        than the text_contrast-excluded version, so this file - not a
+        reformulated one - is the source of truth for these thresholds.
 
-        Per-tier multipliers themselves are unchanged from the original design
-        - only the score thresholds that route samples into each tier moved.
+        A prior pass here used thresholds (6.90/12.30/15.04) calibrated for a
+        text_contrast-excluded distribution this CSV was never regenerated
+        to match; against the real data those thresholds put ~32% of samples
+        in Very Poor (vs. the ~9% design target) - caught by checking the
+        uploaded CSV directly.
 
-        Excellent condition (< 6.90, ~23% of data):
+        The boundaries below (8.07/23.38/26.12) are this CSV's actual
+        22.9th/80.5th/90.6th percentiles (verified: reproduces
+        22.9%/57.6%/10.1%/9.4% tier population exactly against this data).
+        If document_condition.csv is ever regenerated with a different
+        composite formula, re-verify these percentiles against whatever file
+        is actually loaded rather than assuming the old numbers still apply.
+
+        Excellent condition (< 8.07, ~22.9% of data):
             - COMMON samples → aggressive augmentation
             - Synthesize degradation (blur, noise, color jitter) to add variety
             - Standard geometric augmentation
 
-        Medium condition (6.90-12.30, ~57% of data):
+        Medium condition (8.07-23.38, ~57.6% of data):
             - COMMON samples → standard augmentation
             - Moderate degradation + standard geometric
 
-        Poor condition (12.30-15.04, ~10% of data):
+        Poor condition (23.38-26.12, ~10.1% of data):
             - RARE samples → INCREASE geometric diversity to prevent overfitting
             - DISABLE degradation simulation (already degraded/faded)
             - INCREASE geometric augmentation 1.5x
 
-        Very Poor condition (>= 15.04, ~9% of data):
+        Very Poor condition (>= 26.12, ~9.4% of data):
             - RARE outliers → MAXIMUM geometric diversity
             - DISABLE all degradation (already destroyed/severely faded)
             - INCREASE geometric augmentation 2.5x (prevent memorization)
@@ -380,10 +388,10 @@ class ImageAugmenter:
             return img
 
         # Adaptive augmentation based on document condition (4 classes)
-        # Thresholds recalibrated 2026-08-29 for the text_contrast-excluded
-        # condition_score distribution (see docstring above)
+        # Thresholds verified 2026-08-30 against the actual document_condition.csv
+        # (see docstring above - this CSV still has text_contrast in the composite)
         if condition_score is not None:
-            if condition_score < 6.90:  # Excellent condition (~23% of data)
+            if condition_score < 8.07:  # Excellent condition (~22.9% of data)
                 # Synthesize degradation + standard geometric
                 p_degradation_mult = 1.2  # Add blur, noise, color variance
                 p_elastic_mult = 1.0
@@ -395,7 +403,7 @@ class ImageAugmenter:
                 p_contrast_mult = 1.0
                 elastic_alpha_override = self.elastic_alpha
 
-            elif condition_score < 12.30:  # Medium condition (~57% of data)
+            elif condition_score < 23.38:  # Medium condition (~57.6% of data)
                 # Standard augmentation
                 p_degradation_mult = 1.0
                 p_elastic_mult = 1.0
@@ -407,7 +415,7 @@ class ImageAugmenter:
                 p_contrast_mult = 1.0
                 elastic_alpha_override = self.elastic_alpha
 
-            elif condition_score < 15.04:  # Poor condition (~10% of data - RARE!)
+            elif condition_score < 26.12:  # Poor condition (~10.1% of data - RARE!)
                 # RARE: No degradation, MORE geometric (1.5x)
                 # Includes faded-text documents (high text_contrast score)
                 p_degradation_mult = 0.0  # Already degraded/faded
@@ -420,7 +428,7 @@ class ImageAugmenter:
                 p_contrast_mult = 0.5     # Careful with faded ink
                 elastic_alpha_override = self.elastic_alpha * 1.4
 
-            else:  # Very Poor condition (>= 15.04, ~9% of data - RARE!)
+            else:  # Very Poor condition (>= 26.12, ~9.4% of data - RARE!)
                 # RARE: Extreme outliers need MAXIMUM geometric diversity
                 # Severely faded text + physical damage
                 p_degradation_mult = 0.0  # Already destroyed/severely faded
@@ -1553,630 +1561,15 @@ def train_single_fold(train_df, val_df, image_dir, fold_output_dir, cfg,
     return result
 
 
-def compute_special_char_density(text: str) -> float:
-    """
-    Compute special character density as stratification proxy.
-
-    Special characters indicate:
-    - Document type (legal docs with £, dates, formal punctuation)
-    - Scribe style (abbreviations, dashes)
-    - Transcription complexity
-
-    Returns: ratio of special chars to total chars (0.0 to 1.0)
-    """
-    if not text or pd.isna(text):
-        return 0.0
-
-    text = str(text)
-    # Count non-alphanumeric, non-space characters
-    special_chars = sum(1 for c in text if not c.isalnum() and not c.isspace())
-    return special_chars / max(len(text), 1)
-
-
-def compute_digit_density(text: str) -> float:
-    """
-    Compute digit/number density as stratification proxy.
-
-    Digits indicate:
-    - Dates (1842, 15th)
-    - Monetary amounts (£25-10-6)
-    - Measurements (3 acres)
-    - Different OCR challenge (digits often harder than letters)
-
-    Returns: ratio of digits to total chars (0.0 to 1.0)
-    """
-    if not text or pd.isna(text):
-        return 0.0
-
-    text = str(text)
-    digits = sum(1 for c in text if c.isdigit())
-    return digits / max(len(text), 1)
-
-
-def compute_uppercase_ratio(text: str) -> float:
-    """
-    Compute uppercase letter ratio as formality/emphasis indicator.
-
-    Uppercase indicates:
-    - Proper nouns (John Smith, London)
-    - Formal language (WITNESSED, SEALED)
-    - Emphasis and titles (Mr., Esq.)
-    - Different capitalization patterns across document types
-
-    Returns: ratio of uppercase letters to total letters (0.0 to 1.0)
-    """
-    if not text or pd.isna(text):
-        return 0.0
-
-    text = str(text)
-    letters = [c for c in text if c.isalpha()]
-    if not letters:
-        return 0.0
-    uppercase = sum(1 for c in letters if c.isupper())
-    return uppercase / len(letters)
-
-
-def compute_lexical_diversity(text: str) -> float:
-    """
-    Compute lexical diversity (unique word ratio) as vocabulary complexity indicator.
-
-    Lexical diversity indicates:
-    - Repetitive/formulaic language (low diversity): "the said party... the said party"
-    - Rich vocabulary (high diversity): "signed, sealed, witnessed, delivered, dated"
-    - Document type (legal templates vs descriptive narratives)
-
-    Returns: ratio of unique words to total words (0.0 to 1.0)
-    """
-    if not text or pd.isna(text):
-        return 0.0
-
-    words = str(text).lower().split()
-    if not words:
-        return 0.0
-    return len(set(words)) / len(words)
-
-
-def compute_avg_word_length(text: str) -> float:
-    """
-    Compute average word length as vocabulary complexity indicator.
-
-    Word length indicates:
-    - Simple vocabulary (short words): "I see the man go"
-    - Complex vocabulary (long words): "aforementioned beneficiary witnessed"
-    - Different OCR challenge (longer words = more opportunities for errors)
-
-    Returns: average characters per word
-    """
-    if not text or pd.isna(text):
-        return 0.0
-
-    words = [w for w in str(text).split() if w]
-    if not words:
-        return 0.0
-    return sum(len(w) for w in words) / len(words)
-
-
-def compute_ngram_jaccard(text1: str, text2: str, n: int = 3) -> float:
-    """
-    Compute character n-gram Jaccard similarity between two texts.
-
-    Used for fuzzy boilerplate detection - historical legal documents often share
-    90%+ boilerplate with only names/dates differing (e.g., "This Indenture made
-    the [DATE] between [NAMES]...").
-
-    Args:
-        text1, text2: Texts to compare
-        n: N-gram size (default 3-char for historical text)
-
-    Returns:
-        Jaccard similarity (0.0 to 1.0)
-    """
-    if not text1 or not text2:
-        return 0.0
-
-    # Normalize: lowercase, strip whitespace
-    t1 = text1.lower().strip()
-    t2 = text2.lower().strip()
-
-    if t1 == t2:
-        return 1.0
-
-    # Generate character n-grams
-    def get_ngrams(text, n):
-        return set(text[i:i+n] for i in range(len(text) - n + 1))
-
-    ngrams1 = get_ngrams(t1, n)
-    ngrams2 = get_ngrams(t2, n)
-
-    if not ngrams1 or not ngrams2:
-        return 0.0
-
-    # Jaccard similarity: |A ∩ B| / |A ∪ B|
-    intersection = len(ngrams1 & ngrams2)
-    union = len(ngrams1 | ngrams2)
-
-    return intersection / union if union > 0 else 0.0
-
-
-def make_splits(df: pd.DataFrame, data_cfg: dict):
-    """Yield (train_df, val_df, fold_num). Stratified by semantic text properties from ground truth. Grouped by group_col when present."""
-    df = df.copy()
-
-    # STEP 1: Identify duplicate and near-duplicate texts to prevent train/val leakage
-    print("Checking for duplicate and near-duplicate texts (fuzzy boilerplate detection)...")
-    df["_text_clean"] = df["Target"].astype(str).str.lower().str.strip()
-
-    # REFINEMENT: Fuzzy duplicate detection using character n-gram Jaccard similarity
-    # Historical legal docs share 90%+ boilerplate with only names/dates differing
-    # Example: "This Indenture made [DATE] between [NAMES]..." → 95% similarity
-    # Config: data.fuzzy_duplicate_threshold (default 0.90, set to 0 to disable)
-    fuzzy_threshold = data_cfg.get("fuzzy_duplicate_threshold", 0.90)
-
-    # First pass: exact duplicates (fast)
-    text_counts = df["_text_clean"].value_counts()
-    exact_duplicates = text_counts[text_counts > 1]
-
-    # Initialize duplicate groups
-    df["_dup_group"] = -1  # -1 = not a duplicate
-    next_group_id = 0
-
-    # Group exact duplicates first
-    if len(exact_duplicates) > 0:
-        for dup_text in exact_duplicates.index:
-            df.loc[df["_text_clean"] == dup_text, "_dup_group"] = next_group_id
-            next_group_id += 1
-
-    exact_grouped = (df["_dup_group"] >= 0).sum()
-    print(f"  Exact matches: {len(exact_duplicates)} unique texts ({exact_grouped} samples)")
-
-    # Second pass: fuzzy duplicates (slower, O(n²) - only on ungrouped samples)
-    ungrouped_indices = df[df["_dup_group"] == -1].index.tolist()
-    fuzzy_grouped = 0
-
-    if len(ungrouped_indices) > 1 and fuzzy_threshold > 0:
-        print(f"  Scanning {len(ungrouped_indices)} ungrouped samples for fuzzy duplicates (threshold={fuzzy_threshold})...")
-
-        # Build list of ungrouped texts
-        ungrouped_texts = [(idx, df.loc[idx, "_text_clean"]) for idx in ungrouped_indices]
-
-        # Pairwise comparison (optimized: only compare each pair once)
-        for i in range(len(ungrouped_texts)):
-            idx_i, text_i = ungrouped_texts[i]
-
-            # Skip if already grouped
-            if df.loc[idx_i, "_dup_group"] >= 0:
-                continue
-
-            # Find all similar texts (including self)
-            similar_group = [idx_i]
-
-            for j in range(i + 1, len(ungrouped_texts)):
-                idx_j, text_j = ungrouped_texts[j]
-
-                # Skip if already grouped
-                if df.loc[idx_j, "_dup_group"] >= 0:
-                    continue
-
-                # Compute fuzzy similarity
-                similarity = compute_ngram_jaccard(text_i, text_j, n=3)
-
-                if similarity >= fuzzy_threshold:
-                    similar_group.append(idx_j)
-
-            # If found similar texts, create a new group
-            if len(similar_group) > 1:
-                for idx in similar_group:
-                    df.loc[idx, "_dup_group"] = next_group_id
-                next_group_id += 1
-                fuzzy_grouped += len(similar_group)
-
-        print(f"  Fuzzy matches: {fuzzy_grouped} samples grouped into {next_group_id - len(exact_duplicates)} boilerplate clusters")
-    else:
-        print(f"  Fuzzy matching disabled (threshold={fuzzy_threshold})")
-
-    total_grouped = (df["_dup_group"] >= 0).sum()
-    if total_grouped > 0:
-        print(f"  Total grouped: {total_grouped} samples ({exact_grouped} exact + {fuzzy_grouped} fuzzy)")
-
-    # STEP 2: Load text difficulty scores (pre-computed from analysis)
-    text_difficulty_path = REPO_ROOT / "dataset" / "text_difficulty.csv"
-
-    if text_difficulty_path.exists():
-        print(f"Loading text difficulty scores from {text_difficulty_path.name}...")
-        text_diff_df = pd.read_csv(text_difficulty_path)
-        df = df.merge(text_diff_df[["ID", "difficulty_score", "named_entity_score", "number_complexity"]],
-                      on="ID", how="left")
-
-        # Fill missing with median
-        df["difficulty_score"] = df["difficulty_score"].fillna(df["difficulty_score"].median())
-        df["named_entity_score"] = df["named_entity_score"].fillna(df["named_entity_score"].median())
-        df["number_complexity"] = df["number_complexity"].fillna(df["number_complexity"].median())
-
-        print(f"  Text difficulty range: {df['difficulty_score'].min():.1f} - {df['difficulty_score'].max():.1f}")
-        print(f"  Using TEXT DIFFICULTY stratification (analysis-driven)")
-    else:
-        print(f"⚠️  Text difficulty CSV not found at {text_difficulty_path}")
-        print("  Falling back to computing basic semantic features...")
-        # Compute basic features as fallback
-        df["_digit_density"] = df["Target"].apply(compute_digit_density)
-        df["_uppercase_ratio"] = df["Target"].apply(compute_uppercase_ratio)
-        df["_lexical_diversity"] = df["Target"].apply(compute_lexical_diversity)
-
-        # Create proxy difficulty score
-        df["difficulty_score"] = (
-            df["_digit_density"] * 50 +  # Numbers are hard
-            df["_uppercase_ratio"] * 30 +  # Names are hard
-            df["_lexical_diversity"] * 20  # Diverse vocab is hard
-        )
-        df["named_entity_score"] = df["_uppercase_ratio"] * 100
-        df["number_complexity"] = df["_digit_density"] * 100
-
-    # Compute remaining text features for logging
-    df["_digit_density"] = df["Target"].apply(compute_digit_density)
-    df["_uppercase_ratio"] = df["Target"].apply(compute_uppercase_ratio)
-    df["_lexical_diversity"] = df["Target"].apply(compute_lexical_diversity)
-    df["_special_char_density"] = df["Target"].apply(compute_special_char_density)
-    df["_avg_word_length"] = df["Target"].apply(compute_avg_word_length)
-
-    # STRATIFICATION STRATEGY (REFINEMENT 2026-08-13):
-    # Joint Visual-Linguistic Stratification to balance both text complexity AND visual degradation
-    # Previous: Text difficulty (3) × Digits (2) × Names (2) = 12 bins (text-only)
-    # Current: Condition (3) × Text difficulty (3) × Digits (2) × Names (2) = 36 bins (visual + text)
-
-    # 1. Visual condition bins (Good/Medium/Poor) - NEW!
-    has_condition = "condition_score" in df.columns and not df["condition_score"].isna().all()
-    if has_condition:
-        try:
-            # Bin by visual degradation: good (<6.90), medium (6.90-12.30), poor (>12.30)
-            # These thresholds match the adaptive augmentation tiers.
-            # UPDATED 2026-08-29: rescaled from (20, 35) to (6.90, 12.30) - the
-            # condition_score composite changed upstream (text_contrast dropped,
-            # see ImageAugmenter.__call__ docstring), which compressed the score
-            # distribution materially (old median=9.11/90th pctile=25.96 -> new
-            # median=8.95/90th pctile=14.83). The old (20, 35) fixed bins were
-            # calibrated against the old distribution and would misclassify
-            # nearly everything as "good" against the new one.
-            df["_condition_bin"] = pd.qcut(
-                df["condition_score"],
-                q=3,
-                labels=["good_cond", "medium_cond", "poor_cond"],
-                duplicates="drop"
-            )
-            print(f"  ✓ Visual condition stratification enabled (3 bins)")
-        except ValueError:
-            # Fallback: use fixed bins if qcut fails
-            df["_condition_bin"] = pd.cut(
-                df["condition_score"],
-                bins=[0, 6.90, 12.30, 100],
-                labels=["good_cond", "medium_cond", "poor_cond"],
-                include_lowest=True
-            )
-            print(f"  ✓ Visual condition stratification enabled (3 fixed bins)")
-    else:
-        df["_condition_bin"] = "unknown_cond"
-        print(f"  ⚠️  No condition_score found - using text-only stratification")
-
-    # 2. Text difficulty bins (Easy/Medium/Hard)
-    try:
-        df["_text_diff_bin"] = pd.qcut(df["difficulty_score"], q=3, labels=["easy", "medium", "hard"], duplicates="drop")
-    except ValueError:
-        df["_text_diff_bin"] = "medium"
-
-    # 3. Has digits (binary: yes/no)
-    df["_has_digit"] = df["Target"].str.contains(r"\d", regex=True, na=False)
-    df["_digit_bin"] = df["_has_digit"].map({True: "has_nums", False: "no_nums"})
-
-    # 4. Has uppercase (binary: yes/no - indicates names)
-    df["_has_upper"] = df["Target"].str.contains(r"[A-Z]", regex=True, na=False)
-    df["_upper_bin"] = df["_has_upper"].map({True: "has_names", False: "no_names"})
-
-    # Combine: condition (3) × text_difficulty (3) × digits (2) × names (2) = 36 bins
-    # Ensures train and val have balanced distributions across:
-    # - Visual degradation (good/medium/poor condition documents)
-    # - Text complexity (easy/medium/hard difficulty)
-    # - Numbers (harder to transcribe, not in language prior)
-    # - Names (not in language prior, require visual fidelity)
-    df["_bin"] = (df["_condition_bin"].astype(str) + "_" +
-                  df["_text_diff_bin"].astype(str) + "_" +
-                  df["_digit_bin"].astype(str) + "_" +
-                  df["_upper_bin"].astype(str))
-
-    # Keep text_len for logging
-    df["_text_len"] = df["Target"].str.len()
-
-    k_folds = data_cfg.get("k_folds", 1)
-    seed = data_cfg.get("seed", 42)
-    group_col = data_cfg.get("group_col")
-
-    # Store original index for duplicate-aware splitting
-    df["_orig_idx"] = df.index
-
-    helper = ["_text_clean", "_dup_group", "_orig_idx", "_digit_density", "_uppercase_ratio", "_lexical_diversity",
-              "_special_char_density", "_avg_word_length", "_has_digit", "_has_upper", "_text_len",
-              "_condition_bin", "_text_diff_bin", "_digit_bin", "_upper_bin", "_bin",
-              "difficulty_score", "named_entity_score", "number_complexity"]
-
-    if group_col and group_col not in df.columns:
-        raise ValueError(f"group_col '{group_col}' not in the CSV columns")
-
-    if k_folds > 1:
-        # K-fold with duplicate awareness
-        has_duplicates = (df["_dup_group"] >= 0).any()
-
-        if has_duplicates or group_col:
-            # Use StratifiedGroupKFold to keep duplicates together
-            if not GROUP_KFOLD_AVAILABLE:
-                raise RuntimeError("K-fold with duplicates needs scikit-learn >= 1.0 for StratifiedGroupKFold")
-
-            # Create synthetic group column combining duplicates + user group_col
-            if has_duplicates and group_col:
-                # Combine both: duplicate group + user-specified group
-                df["_fold_group"] = df["_dup_group"].astype(str) + "_" + df[group_col].astype(str)
-                print(f"K-fold with duplicate awareness + grouped on '{group_col}'")
-            elif has_duplicates:
-                # Use duplicate group as fold group
-                # Assign unique group ID to non-duplicates
-                max_dup_group = df["_dup_group"].max()
-                df["_fold_group"] = df.apply(
-                    lambda row: row["_dup_group"] if row["_dup_group"] >= 0 else max_dup_group + 1 + row.name,
-                    axis=1
-                )
-                print(f"K-fold with duplicate awareness (keeps {(df['_dup_group'] >= 0).sum()} duplicate samples together)")
-            else:
-                # Only user-specified group
-                df["_fold_group"] = df[group_col]
-                print(f"K-fold grouped on '{group_col}' ({df[group_col].nunique()} groups)")
-
-            helper.append("_fold_group")
-
-            splitter = StratifiedGroupKFold(n_splits=k_folds, shuffle=True, random_state=seed)
-            split_iter = splitter.split(df, df["_bin"], groups=df["_fold_group"])
-        else:
-            # Standard k-fold (no duplicates, no grouping)
-            strat_desc = "condition (3) × difficulty (3) × digits (2) × names (2) = 36 bins" if has_condition else "difficulty (3) × digits (2) × names (2) = 12 bins"
-            print(f"Stratified {k_folds}-fold: {strat_desc}")
-            splitter = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=seed)
-            split_iter = splitter.split(df, df["_bin"])
-
-        for fold_num, (tr, va) in enumerate(split_iter, 1):
-            train_df = df.iloc[tr].copy()
-            val_df = df.iloc[va].copy()
-
-            # Verify no duplicate leakage across folds
-            if has_duplicates:
-                train_texts = set(train_df["_text_clean"])
-                val_texts = set(val_df["_text_clean"])
-                leaked = train_texts & val_texts
-                if leaked:
-                    print(f"  ⚠️  Fold {fold_num}: {len(leaked)} duplicate texts leaked (should be 0)!")
-                else:
-                    print(f"  ✓ Fold {fold_num}: No duplicate leakage")
-
-            yield (train_df.drop(columns=helper).copy(),
-                   val_df.drop(columns=helper).copy(),
-                   fold_num)
-    else:
-        # STEP 3: Split with duplicate AND document cluster awareness
-        has_duplicates = (df["_dup_group"] >= 0).any()
-        has_groups = group_col is not None
-
-        if has_duplicates or has_groups:
-            # Create unified group column combining duplicates + user group_col
-            if has_duplicates and has_groups:
-                # Combine both: duplicate group + document cluster
-                df["_split_group"] = df["_dup_group"].astype(str) + "_" + df[group_col].astype(str)
-                print(f"Splitting with duplicate awareness + document clustering ('{group_col}')...")
-            elif has_duplicates:
-                # Only duplicates - assign unique group ID to non-duplicates
-                max_dup_group = df["_dup_group"].max()
-                df["_split_group"] = df.apply(
-                    lambda row: row["_dup_group"] if row["_dup_group"] >= 0 else max_dup_group + 1 + row.name,
-                    axis=1
-                )
-                print("Splitting with duplicate-group awareness (keeps duplicate texts together)...")
-            else:
-                # Only user group_col (document clusters)
-                df["_split_group"] = df[group_col]
-                print(f"Splitting with document clustering ('{group_col}': {df[group_col].nunique()} clusters)...")
-
-            helper.append("_split_group")
-
-            # Strategy: For each group (duplicate/cluster), assign all members to train or val together
-            # 1. Get one representative per group
-            # 2. Split representatives with stratification
-            # 3. Propagate split assignment to all group members
-
-            # Get one representative per group (use first occurrence)
-            group_representatives = df.groupby("_split_group", as_index=False).first()
-
-            # Split representatives with stratification
-            # Try full stratification, fall back if bins too small
-            try:
-                split_train, split_val = train_test_split(
-                    group_representatives,
-                    test_size=data_cfg["val_split"],
-                    stratify=group_representatives["_bin"],
-                    random_state=seed
-                )
-                print(f"  ✓ Using full stratification (12 bins)")
-            except ValueError:
-                # Some bins have <2 samples after grouping - fall back to simpler stratification
-                print(f"  ⚠️  Full stratification failed (some bins too small after grouping)")
-
-                # Try medium fallback: condition × digits × names (12 bins)
-                if has_condition:
-                    try:
-                        group_representatives["_simple_bin"] = (
-                            group_representatives["_condition_bin"].astype(str) + "_" +
-                            group_representatives["_has_digit"].astype(str) + "_" +
-                            group_representatives["_has_upper"].astype(str)
-                        )
-                        split_train, split_val = train_test_split(
-                            group_representatives,
-                            test_size=data_cfg["val_split"],
-                            stratify=group_representatives["_simple_bin"],
-                            random_state=seed
-                        )
-                        print(f"  ✓ Using medium stratification: condition (3) × digits (2) × names (2) = 12 bins")
-                    except ValueError:
-                        # Still too small, fall back to minimal
-                        group_representatives["_simple_bin"] = (
-                            group_representatives["_has_digit"].astype(str) + "_" +
-                            group_representatives["_has_upper"].astype(str)
-                        )
-                        split_train, split_val = train_test_split(
-                            group_representatives,
-                            test_size=data_cfg["val_split"],
-                            stratify=group_representatives["_simple_bin"],
-                            random_state=seed
-                        )
-                        print(f"  ✓ Using minimal stratification: digits (2) × names (2) = 4 bins")
-                else:
-                    # No condition score, simplify to just has_digit × has_upper (4 bins)
-                    group_representatives["_simple_bin"] = (
-                        group_representatives["_has_digit"].astype(str) + "_" +
-                        group_representatives["_has_upper"].astype(str)
-                    )
-                    split_train, split_val = train_test_split(
-                        group_representatives,
-                        test_size=data_cfg["val_split"],
-                        stratify=group_representatives["_simple_bin"],
-                        random_state=seed
-                    )
-                    print(f"  ✓ Using simplified stratification: digits (2) × names (2) = 4 bins")
-
-            # Now propagate: which groups went to train vs val?
-            train_groups = set(split_train["_split_group"])
-            val_groups = set(split_val["_split_group"])
-
-            # Build train/val by group assignment
-            train_mask = df["_split_group"].isin(train_groups)
-            val_mask = df["_split_group"].isin(val_groups)
-
-            train_df = df[train_mask].copy()
-            val_df = df[val_mask].copy()
-
-            # Verify no leakage (for duplicates)
-            if has_duplicates:
-                train_texts = set(train_df["_text_clean"])
-                val_texts = set(val_df["_text_clean"])
-                leaked = train_texts & val_texts
-                if leaked:
-                    print(f"  ⚠️  WARNING: {len(leaked)} texts still leaked (should be 0)!")
-                else:
-                    print(f"  ✓ No duplicate text leakage - all copies kept together")
-
-            # Verify group separation (for document clusters)
-            if has_groups:
-                train_clusters = set(train_df[group_col])
-                val_clusters = set(val_df[group_col])
-                leaked_clusters = train_clusters & val_clusters
-                if leaked_clusters:
-                    print(f"  ⚠️  WARNING: {len(leaked_clusters)} clusters leaked across train/val!")
-                else:
-                    print(f"  ✓ No cluster leakage - {len(train_clusters)} clusters in train, {len(val_clusters)} in val")
-
-        else:
-            # No duplicates or groups: standard stratified split
-            train_df, val_df = train_test_split(
-                df, test_size=data_cfg["val_split"], stratify=df["_bin"], random_state=seed
-            )
-
-        # Log distributions to verify stratification is working
-        train_digits = train_df["_digit_density"]
-        val_digits = val_df["_digit_density"]
-        train_upper = train_df["_uppercase_ratio"]
-        val_upper = val_df["_uppercase_ratio"]
-        train_lex = train_df["_lexical_diversity"]
-        val_lex = val_df["_lexical_diversity"]
-        train_spec = train_df["_special_char_density"]
-        val_spec = val_df["_special_char_density"]
-        train_wlen = train_df["_avg_word_length"]
-        val_wlen = val_df["_avg_word_length"]
-
-        # Get difficulty scores for logging
-        train_diff = train_df.get("difficulty_score", train_df["_lexical_diversity"])
-        val_diff = val_df.get("difficulty_score", val_df["_lexical_diversity"])
-
-        # Get condition scores for logging (if available)
-        has_condition_logging = "condition_score" in train_df.columns and not train_df["condition_score"].isna().all()
-
-        strat_desc = "condition (3) × difficulty (3) × digits (2) × names (2) = 36 bins" if has_condition else "difficulty (3) × digits (2) × names (2) = 12 bins"
-        print(f"Stratified split: {strat_desc}")
-        print(f"  Train: {len(train_df)} samples")
-
-        # Visual condition distribution
-        if has_condition_logging:
-            train_cond = train_df["condition_score"]
-            print(f"    Visual condition: min={train_cond.min():.1f}, median={train_cond.median():.1f}, max={train_cond.max():.1f}")
-
-        print(f"    Text difficulty: min={train_diff.min():.1f}, median={train_diff.median():.1f}, max={train_diff.max():.1f}")
-        print(f"    Digit density: min={train_digits.min():.3f}, median={train_digits.median():.3f}, max={train_digits.max():.3f}")
-        print(f"    Uppercase ratio: min={train_upper.min():.3f}, median={train_upper.median():.3f}, max={train_upper.max():.3f}")
-        print(f"    Lexical diversity: min={train_lex.min():.3f}, median={train_lex.median():.3f}, max={train_lex.max():.3f}")
-        print(f"    Text length: min={train_df['_text_len'].min()}, median={train_df['_text_len'].median():.0f}, max={train_df['_text_len'].max()}")
-        print(f"  Val:   {len(val_df)} samples")
-
-        # Visual condition distribution
-        if has_condition_logging:
-            val_cond = val_df["condition_score"]
-            print(f"    Visual condition: min={val_cond.min():.1f}, median={val_cond.median():.1f}, max={val_cond.max():.1f}")
-
-        print(f"    Text difficulty: min={val_diff.min():.1f}, median={val_diff.median():.1f}, max={val_diff.max():.1f}")
-        print(f"    Digit density: min={val_digits.min():.3f}, median={val_digits.median():.3f}, max={val_digits.max():.3f}")
-        print(f"    Uppercase ratio: min={val_upper.min():.3f}, median={val_upper.median():.3f}, max={val_upper.max():.3f}")
-        print(f"    Lexical diversity: min={val_lex.min():.3f}, median={val_lex.median():.3f}, max={val_lex.max():.3f}")
-        print(f"    Text length: min={val_df['_text_len'].min()}, median={val_df['_text_len'].median():.0f}, max={val_df['_text_len'].max()}")
-
-        yield train_df.drop(columns=helper), val_df.drop(columns=helper), None
 
 
 def train(cfg: dict):
     data_cfg, train_cfg = cfg["data"], cfg["training"]
 
-    train_csv = REPO_ROOT / data_cfg["train_csv"]
     image_dir = REPO_ROOT / data_cfg["image_dir"]
     base_output_dir = REPO_ROOT / train_cfg["output_dir"]
 
-    df = pd.read_csv(train_csv)
-    nan_count = df['Target'].isna().sum()
-    print(f"Loaded {len(df)} samples from {train_csv.name}" + (f" ({nan_count} NaN targets)" if nan_count > 0 else ""))
-
-    # Load document clusters if provided
-    cluster_csv = data_cfg.get("cluster_csv")
-    if cluster_csv:
-        cluster_path = REPO_ROOT / cluster_csv
-        if cluster_path.exists():
-            cluster_df = pd.read_csv(cluster_path)
-            df = df.merge(cluster_df, on="ID", how="left")
-            group_col = data_cfg.get("group_col")
-            if group_col and group_col in df.columns:
-                print(f"Loaded document clusters from {cluster_path.name}")
-                print(f"  {df[group_col].nunique()} unique clusters, avg {len(df)/df[group_col].nunique():.1f} samples/cluster")
-            else:
-                print(f"⚠️  Warning: cluster_csv provided but group_col '{group_col}' not found in merged data")
-        else:
-            print(f"⚠️  Warning: cluster_csv '{cluster_csv}' not found, proceeding without clustering")
-
-    # Load document condition scores for adaptive augmentation (if available)
-    condition_csv = REPO_ROOT / "dataset" / "document_condition.csv"
-    if condition_csv.exists():
-        condition_df = pd.read_csv(condition_csv)
-        # Filter to successful analyses only
-        condition_df = condition_df[condition_df["success"] == True]
-        # Merge condition scores
-        df = df.merge(condition_df[["ID", "condition_score"]], on="ID", how="left")
-        # Fill missing with median (for any images that failed analysis)
-        median_cond = df["condition_score"].median()
-        n_missing = df["condition_score"].isna().sum()
-        if n_missing > 0:
-            df.loc[df["condition_score"].isna(), "condition_score"] = median_cond
-        print(f"Loaded document condition scores from {condition_csv.name}")
-        print(f"  Mean: {df['condition_score'].mean():.1f}, Median: {median_cond:.1f}, Std: {df['condition_score'].std():.1f}")
-        if n_missing > 0:
-            print(f"  Filled {n_missing} missing values with median")
-    else:
-        print(f"ℹ️  Document condition scores not found ({condition_csv.name}), proceeding without adaptive augmentation")
+    df = load_and_prepare_dataframe(data_cfg)
 
     k_folds = data_cfg.get("k_folds", 1)
     n_folds = k_folds if k_folds > 1 else None
@@ -2239,7 +1632,8 @@ def main():
                         help="Disable early stopping (train full epochs regardless of plateau)")
     args = parser.parse_args()
 
-    config_path = SCRIPT_DIR.joinpath("configs") / args.config
+    # configs/ is a sibling directory of this script (scripts/train/configs/config.yaml)
+    config_path = SCRIPT_DIR / "configs" / args.config
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
 
