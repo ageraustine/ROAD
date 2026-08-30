@@ -1,8 +1,8 @@
-# Qwen3-VL-4B Full Dataset Training (No K-Fold)
+# Qwen3-VL-8B Full Dataset Training (No K-Fold)
 # Train on 90% of data (~3,688 samples) vs K-fold's 80% (~3,278 samples)
 
 model:
-  name: "Qwen/Qwen3-VL-4B-Instruct"
+  name: "Qwen/Qwen3-VL-8B-Instruct"
   use_flash_attention: true
   use_quantization: false
   torch_dtype: "bfloat16"
@@ -30,7 +30,7 @@ data:
   fuzzy_duplicate_threshold: 0.85  # Recommended: 0.85-0.95 for historical legal docs
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-4B-single-textdiff-2"  # Single split with text difficulty stratification
+  output_dir: "/content/drive/MyDrive/prd/qwen3-8B-single-textdiff-2"  # Single split with text difficulty stratification
 
   batch_size: 2
   eval_batch_size: 2
@@ -142,7 +142,7 @@ augmentation:
   max_pixels_ratio: 1.0     # 100% of max_pixels (2,016,000)
 
 inference:
-  checkpoint: "outputs/qwen3-4B-full/best"
+  checkpoint: "outputs/qwen3-8B-full/best"
   output_csv: "submission_full.csv"
   max_new_tokens: 128  # Targets max at 120 chars - prevents loops structurally
   num_beams: 5
