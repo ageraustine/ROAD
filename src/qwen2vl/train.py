@@ -2239,7 +2239,7 @@ def main():
                         help="Disable early stopping (train full epochs regardless of plateau)")
     args = parser.parse_args()
 
-    config_path = SCRIPT_DIR / args.config
+    config_path = SCRIPT_DIR.joinpath("configs") / args.config
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
 
