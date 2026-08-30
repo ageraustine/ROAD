@@ -1,8 +1,8 @@
-# Qwen3-VL-8B Full Dataset Training (No K-Fold)
+# Qwen3-VL-4B Full Dataset Training (No K-Fold)
 # Train on 90% of data (~3,688 samples) vs K-fold's 80% (~3,278 samples)
 
 model:
-  name: "Qwen/Qwen3-VL-8B-Instruct"
+  name: "Qwen/Qwen3-VL-4B-Instruct"
   use_flash_attention: true
   use_quantization: false
   torch_dtype: "bfloat16"
@@ -30,7 +30,7 @@ data:
   fuzzy_duplicate_threshold: 0.85  # Recommended: 0.85-0.95 for historical legal docs
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-8B-single-textdiff-2"  # Single split with text difficulty stratification
+  output_dir: "/content/drive/MyDrive/prd/qwen3-4B-single-textdiff-2"  # Single split with text difficulty stratification
 
   batch_size: 2
   eval_batch_size: 2
@@ -47,14 +47,14 @@ training:
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  lora_r: 16  # Base rank for LLM
-  lora_alpha: 32
+  lora_r: 8  # Base rank for LLM
+  lora_alpha: 16
   lora_dropout: 0.05  # ELITE: Lighter dropout (was 0.1, allow more learning)
   use_rslora: true  # Rank-Stabilized LoRA
   use_dora: false
   loraplus_lr_ratio: null  # DISABLED - logging anomaly suggests possible bug (0 A params, 368 B params)
 
-  # Rank asymmetry - Vision r=64, LLM r=16 (~80M params, optimal capacity)
+  # Rank asymmetry - Vision r=64, LLM r=8 (~80M params, optimal capacity)
   rank_pattern:
     qkv: 64         # Vision attention (critical for stroke patterns)
     proj: 64        # Vision output projection
@@ -75,8 +75,8 @@ training:
 
   max_pixels: 2016000
 
-  eval_steps: 100
-  save_steps: 100
+  eval_steps: 50
+  save_steps: 50
   save_total_limit: 1
 
   # Compute CER+WER for monitoring (competition metric)
@@ -142,7 +142,7 @@ augmentation:
   max_pixels_ratio: 1.0     # 100% of max_pixels (2,016,000)
 
 inference:
-  checkpoint: "outputs/qwen3-8B-full/best"
+  checkpoint: "outputs/qwen3-4B-full/best"
   output_csv: "submission_full.csv"
   max_new_tokens: 128  # Targets max at 120 chars - prevents loops structurally
   num_beams: 5
