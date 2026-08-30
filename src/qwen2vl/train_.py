@@ -330,44 +330,23 @@ class ImageAugmenter:
         Apply augmentation with optional adaptive strength based on document condition.
 
         STRATEGY (4-class system based on dataset analysis):
-        RECALIBRATED (2026-08-29): thresholds updated to match the latest
-        condition_score distribution. text_contrast (previously 35% weight,
-        the single largest term) was dropped from the composite score
-        upstream because it correlated -0.47 with texture_degradation and
-        -0.34 with the old composite itself (rougher paper background was
-        inflating its gradient statistic, making faded text read as MORE
-        legible - backwards from intent). Remaining weights (tears_and_holes/
-        paper_color_variance/texture_degradation/stains) were proportionally
-        rescaled to sum to 1.0.
+        Updated 2026-08-13 after adding text_contrast detector.
 
-        This changed the condition_score distribution materially: old
-        median=9.11 / 90th pctile=25.96 -> new median=8.95 / 90th pctile=14.83
-        (std compressed from 8.15 to 5.35 - text_contrast was specifically
-        inflating the upper tail). The boundaries below (6.90/12.30/15.04)
-        are the new score's exact 22.9th/80.5th/90.6th percentiles - the SAME
-        percentile targets the original 19/37/42 thresholds were meant to hit
-        - so tier population fractions are unchanged (~23.1%/57.4%/10.1%/9.4%)
-        even though the score producing them is different. Verified directly
-        against the recalculated document_condition.csv, not assumed.
-
-        Per-tier multipliers themselves are unchanged from the original design
-        - only the score thresholds that route samples into each tier moved.
-
-        Excellent condition (< 6.90, ~23% of data):
+        Excellent condition (< 19, 50% of data):
             - COMMON samples → aggressive augmentation
             - Synthesize degradation (blur, noise, color jitter) to add variety
             - Standard geometric augmentation
 
-        Medium condition (6.90-12.30, ~57% of data):
+        Medium condition (19-37, 35% of data):
             - COMMON samples → standard augmentation
             - Moderate degradation + standard geometric
 
-        Poor condition (12.30-15.04, ~10% of data):
+        Poor condition (37-42, 12% of data):
             - RARE samples → INCREASE geometric diversity to prevent overfitting
             - DISABLE degradation simulation (already degraded/faded)
             - INCREASE geometric augmentation 1.5x
 
-        Very Poor condition (>= 15.04, ~9% of data):
+        Very Poor condition (>42, 3% of data):
             - RARE outliers → MAXIMUM geometric diversity
             - DISABLE all degradation (already destroyed/severely faded)
             - INCREASE geometric augmentation 2.5x (prevent memorization)
@@ -380,10 +359,9 @@ class ImageAugmenter:
             return img
 
         # Adaptive augmentation based on document condition (4 classes)
-        # Thresholds recalibrated 2026-08-29 for the text_contrast-excluded
-        # condition_score distribution (see docstring above)
+        # Thresholds updated 2026-08-13 after adding text_contrast detector
         if condition_score is not None:
-            if condition_score < 6.90:  # Excellent condition (~23% of data)
+            if condition_score < 19:  # Excellent condition (50% of data)
                 # Synthesize degradation + standard geometric
                 p_degradation_mult = 1.2  # Add blur, noise, color variance
                 p_elastic_mult = 1.0
@@ -395,7 +373,7 @@ class ImageAugmenter:
                 p_contrast_mult = 1.0
                 elastic_alpha_override = self.elastic_alpha
 
-            elif condition_score < 12.30:  # Medium condition (~57% of data)
+            elif condition_score < 37:  # Medium condition (35% of data)
                 # Standard augmentation
                 p_degradation_mult = 1.0
                 p_elastic_mult = 1.0
@@ -407,7 +385,7 @@ class ImageAugmenter:
                 p_contrast_mult = 1.0
                 elastic_alpha_override = self.elastic_alpha
 
-            elif condition_score < 15.04:  # Poor condition (~10% of data - RARE!)
+            elif condition_score < 42:  # Poor condition (12% of data - RARE!)
                 # RARE: No degradation, MORE geometric (1.5x)
                 # Includes faded-text documents (high text_contrast score)
                 p_degradation_mult = 0.0  # Already degraded/faded
@@ -420,7 +398,7 @@ class ImageAugmenter:
                 p_contrast_mult = 0.5     # Careful with faded ink
                 elastic_alpha_override = self.elastic_alpha * 1.4
 
-            else:  # Very Poor condition (>= 15.04, ~9% of data - RARE!)
+            else:  # Very Poor condition (>42, 3% of data - RARE!)
                 # RARE: Extreme outliers need MAXIMUM geometric diversity
                 # Severely faded text + physical damage
                 p_degradation_mult = 0.0  # Already destroyed/severely faded
@@ -474,14 +452,10 @@ class ImageAugmenter:
             h, w = arr.shape[:2]
 
             # REFINEMENT: Scale-aware kernel size based on image resolution
-            # k = max(3, int(h × 0.005)) ensures consistent relative ink thickness
+            # k = max(1, int(h × 0.005)) ensures consistent relative ink thickness
             # Low-res: smaller kernel (avoids erasing fine strokes)
             # High-res: larger kernel (visible effect at higher DPI)
-            # FIX: floor raised from 1 to 3 - h*0.005 rounds to 1 (a mathematical
-            # no-op for cv2.dilate/erode) for any image under ~400px tall, which is
-            # every line-crop actually seen (30-265px). Below that floor this
-            # augmentation was silently doing nothing except the trailing blur.
-            kernel_size = max(3, int(h * 0.005))
+            kernel_size = max(1, int(h * 0.005))
             kernel_size = kernel_size if kernel_size % 2 == 1 else kernel_size + 1  # Must be odd
             kernel = np.ones((kernel_size, kernel_size), np.uint8)
 
@@ -514,15 +488,10 @@ class ImageAugmenter:
             new_w = int(w + offset)
 
             # Affine transform for horizontal shear with expanded canvas
-            # FIX: recenter regardless of shear direction. Previously the centering
-            # offset only applied when shear_factor > 0, so negative angles anchored
-            # the top row at the original position and pushed the entire offset into
-            # the bottom row instead of splitting it - same shear magnitude,
-            # inconsistent framing depending on sign. This makes both signs symmetric.
             img = img.transform(
                 (new_w, h),
                 Image.AFFINE,
-                (1, shear_factor, -shear_factor * h / 2, 0, 1, 0),
+                (1, shear_factor, -shear_factor * h / 2 if shear_factor > 0 else 0, 0, 1, 0),
                 fillcolor=bg_color,
                 resample=Image.BICUBIC  # Better quality than BILINEAR for text
             )
@@ -618,10 +587,7 @@ class ImageAugmenter:
 
         # Hue jitter (brown ↔ cream color shifts)
         hue_shift = random.uniform(-self.hue_jitter, self.hue_jitter) * 180  # OpenCV hue is 0-180
-        # FIX: wrap, don't clip. Hue is circular (0 and 180 are both "red") - clipping
-        # hard-stopped pixels near the boundary instead of wrapping to the adjacent
-        # (correct) hue on the other side.
-        hsv[:, :, 0] = (hsv[:, :, 0] + hue_shift) % 180
+        hsv[:, :, 0] = np.clip(hsv[:, :, 0] + hue_shift, 0, 180)
 
         # Saturation jitter (faded vs vibrant paper)
         sat_factor = random.uniform(1 - self.saturation_jitter, 1 + self.saturation_jitter)
@@ -1827,15 +1793,8 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
     has_condition = "condition_score" in df.columns and not df["condition_score"].isna().all()
     if has_condition:
         try:
-            # Bin by visual degradation: good (<6.90), medium (6.90-12.30), poor (>12.30)
-            # These thresholds match the adaptive augmentation tiers.
-            # UPDATED 2026-08-29: rescaled from (20, 35) to (6.90, 12.30) - the
-            # condition_score composite changed upstream (text_contrast dropped,
-            # see ImageAugmenter.__call__ docstring), which compressed the score
-            # distribution materially (old median=9.11/90th pctile=25.96 -> new
-            # median=8.95/90th pctile=14.83). The old (20, 35) fixed bins were
-            # calibrated against the old distribution and would misclassify
-            # nearly everything as "good" against the new one.
+            # Bin by visual degradation: good (<20), medium (20-35), poor (>35)
+            # These thresholds match the adaptive augmentation tiers
             df["_condition_bin"] = pd.qcut(
                 df["condition_score"],
                 q=3,
@@ -1847,7 +1806,7 @@ def make_splits(df: pd.DataFrame, data_cfg: dict):
             # Fallback: use fixed bins if qcut fails
             df["_condition_bin"] = pd.cut(
                 df["condition_score"],
-                bins=[0, 6.90, 12.30, 100],
+                bins=[0, 20, 35, 100],
                 labels=["good_cond", "medium_cond", "poor_cond"],
                 include_lowest=True
             )
