@@ -20,9 +20,7 @@ data:
   #   - Numbers and names (harder OCR challenges)
   k_folds: 1  # Single 90/10 split (more data than k-fold's 67%)
   val_split: 0.1  # 90% train (~3,688), 10% val (~410)
-  seed: 3407  # confirmed actual value for this run - "all previous runs used 42"
-              # comment was stale/inaccurate; whether the original 0.09 baseline
-              # used 42 or 3407 is still unresolved (open question, not this comment)
+  seed: 42
 
   # Note: Duplicate-group awareness REMOVED for best model performance
   # Reason: For OCR/HTR, same text with different handwriting is NOT leakage
@@ -52,7 +50,7 @@ training:
   lora_r: 8 # Base rank for LLM
   lora_alpha: 16
   lora_dropout: 0.05 
-  use_rslora: false  # Rank-Stabilized LoRA
+  use_rslora: true  # Rank-Stabilized LoRA
   use_dora: false
   loraplus_lr_ratio: null  # DISABLED - logging anomaly suggests possible bug (0 A params, 368 B params)
 
@@ -77,8 +75,8 @@ training:
   max_pixels: 2016000
   max_seq_length: 3584
 
-  eval_steps: 50
-  save_steps: 50
+  eval_steps: 100
+  save_steps: 100
   save_total_limit: 1
 
   # Compute CER+WER for monitoring (competition metric)
@@ -184,8 +182,8 @@ augmentation:
   # more targeted change. This diverges from the known-good 0.09 baseline
   # (which had all four DEGRADATION types at 0.0) - track this bundle as ONE
   # variable when comparing eval_score, not four independent changes.
-  p_blur: 0.15
-  p_noise: 0.15
+  p_blur: 0.0
+  p_noise: 0.0
   p_brightness: 0.0
   p_contrast: 0.0
 
@@ -196,7 +194,7 @@ augmentation:
   # dataset) is fixed in train.py, so this is now a real, verified effect
   # (Δpx~95% of pixels changed per firing on a real sample) - not the same
   # as leaving it at a small "safe-sounding" number, worth watching closely.
-  p_morphology: 0.1
+  p_morphology: 0.0
 
   # GEOMETRIC augmentations (INCREASED 1.5x for poor-condition docs)
   # Pure coordinate remaps, no quality degradation
@@ -242,7 +240,7 @@ augmentation:
   # design (max ~40% of image width covered, verified by direct pixel
   # measurement including under an adversarial multi-region config) so it
   # can't blank a 1-2 line crop.
-  p_local_degradation: 0.15
+  p_local_degradation: 0.0
   local_width_ratio: [0.12, 0.28]   # fraction of image width per patch
   local_height_ratio: [0.85, 1.0]   # fraction of image height per patch
   local_max_regions: 1              # patches per image (keep at 1 - see cumulative-width note in code)
