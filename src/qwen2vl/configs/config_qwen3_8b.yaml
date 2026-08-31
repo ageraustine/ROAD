@@ -43,18 +43,18 @@ training:
   lr_scheduler: "cosine"
 
   # LIGHTER regularization for elite performance (allow model to learn more)
-  weight_decay: 0.02  # Reduced from 0.03 (less constraint)
+  weight_decay: 0.05
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
   lora_r: 16  # Base rank for LLM
   lora_alpha: 32
-  lora_dropout: 0.05  # ELITE: Lighter dropout (was 0.1, allow more learning)
+  lora_dropout: 0.1
   use_rslora: true  # Rank-Stabilized LoRA
   use_dora: false
   loraplus_lr_ratio: null  # DISABLED - logging anomaly suggests possible bug (0 A params, 368 B params)
 
-  # Rank asymmetry - Vision r=64, LLM r=8 (~80M params, optimal capacity)
+  # Rank asymmetry - Vision r=64, LLM r=16 (~80M params, optimal capacity)
   rank_pattern:
     qkv: 64         # Vision attention (critical for stroke patterns)
     proj: 64        # Vision output projection
@@ -101,7 +101,7 @@ training:
     min_delta: 0.0001  # Very small threshold - catches tiny improvements, avoids noise
 
 augmentation:
-  enabled: false # Document-aware augmentation based on condition analysis
+  enabled: true # Document-aware augmentation based on condition analysis
 
   # DEGRADATION augmentations (disabled for poor-condition docs)
   p_blur: 0.15         # ENABLED - mild (0.5-1.5px radius), gated off for poor/very-poor via p_degradation_mult
