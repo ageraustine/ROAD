@@ -1275,7 +1275,9 @@ def setup_model(cfg: dict):
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
 
-    lora_config = LoraConfig(
+    freeze_vision_tower = train_cfg.get("freeze_vision_tower", False)
+
+    lora_kwargs = dict(
         r=train_cfg["lora_r"],
         lora_alpha=train_cfg["lora_alpha"],
         target_modules=train_cfg["lora_target_modules"],
@@ -1288,7 +1290,45 @@ def setup_model(cfg: dict):
         bias="none",
         task_type="CAUSAL_LM",
     )
+
+    # freeze_vision_tower: skip LoRA on the vision tower entirely, so it stays
+    # exactly as pretrained (no adapter, no gradient, no optimizer state for
+    # it at all) while the LLM decoder still gets adapted normally. Distinct
+    # from just setting a low vision rank in rank_pattern - this is a true
+    # freeze, matching the standard VLM LoRA convention of protecting the
+    # pretrained vision encoder's representations (see: most Qwen-VL/LLaVA
+    # fine-tuning recipes default to freezing ViT unless the task involves a
+    # visual domain far outside pretraining, e.g. satellite/medical imaging -
+    # historical HTR is arguably borderline, hence this being config-gated
+    # and A/B-testable rather than hardcoded either way).
+    #
+    # Uses PEFT's native exclude_modules (added ~peft 0.11) when available -
+    # this is the clean option, since excluded modules never get an adapter
+    # instantiated at all (zero wasted memory, not even for the small adapter
+    # matrices themselves). Falls back to a manual requires_grad=False pass
+    # after wrapping if the installed PEFT is too old to have exclude_modules
+    # - correctness is identical either way (the sanity check below verifies
+    # zero trainable vision params regardless of which path was taken), the
+    # only difference is the fallback still allocates (but never trains) the
+    # vision LoRA adapter tensors.
+    exclude_modules_supported = "exclude_modules" in inspect.signature(LoraConfig.__init__).parameters
+    if freeze_vision_tower:
+        if exclude_modules_supported:
+            lora_kwargs["exclude_modules"] = r".*\.visual\..*"
+        else:
+            print("  [compat] installed peft has no LoraConfig.exclude_modules - "
+                  "vision LoRA modules will still be created, then frozen manually "
+                  "(requires_grad=False) after wrapping")
+
+    lora_config = LoraConfig(**supported_kwargs(LoraConfig, lora_kwargs))
     model = get_peft_model(model, lora_config)
+
+    # Fallback freeze (only does anything if exclude_modules wasn't supported
+    # above; otherwise no vision LoRA params exist and this loop is a no-op).
+    if freeze_vision_tower:
+        for name, param in model.named_parameters():
+            if ".visual." in name and "lora_" in name:
+                param.requires_grad = False
 
     # LoRA+ configuration (different LR for A and B matrices)
     loraplus_lr_ratio = train_cfg.get("loraplus_lr_ratio", None)
@@ -1306,14 +1346,41 @@ def setup_model(cfg: dict):
     n_total = sum(p.numel() for p in model.parameters())
     trainable_pct = 100 * n_trainable / n_total
 
+    # Trainable vision-specific param count - the actual ground truth for
+    # whether freeze_vision_tower took effect, independent of which mechanism
+    # (exclude_modules vs. the manual fallback) ended up being used.
+    n_trainable_vision = sum(
+        p.numel() for n, p in model.named_parameters()
+        if ".visual." in n and p.requires_grad
+    )
+
     print(f"✓ ({n_trainable/1e6:.1f}M trainable / {n_total/1e6:.0f}M total = {trainable_pct:.2f}%)")
     print(f"  LoRA modules: {len(lora_modules)} total ({vision_modules} vision / {llm_modules} llm)")
+    if freeze_vision_tower:
+        vision_desc = "0 vision LoRA modules created" if vision_modules == 0 \
+            else f"{vision_modules} vision LoRA modules created but frozen"
+        print(f"  Vision tower FROZEN (freeze_vision_tower=true): "
+              f"{n_trainable_vision/1e6:.3f}M trainable vision params ({vision_desc})")
 
     # Sanity checks
     if n_trainable == 0:
         raise RuntimeError("LoRA matched zero modules. Check lora_target_modules regex.")
-    if vision_modules == 0:
-        raise RuntimeError(f"LoRA matched 0 vision modules (expected ~116). Check target_modules regex.")
+
+    if freeze_vision_tower:
+        # Fails loudly rather than silently continuing with a freeze that
+        # didn't actually take - e.g. if a future model family doesn't use
+        # ".visual." in its module names, both exclude_modules and the manual
+        # fallback above would silently match nothing, and training would
+        # proceed with vision unexpectedly still trainable.
+        if n_trainable_vision != 0:
+            raise RuntimeError(
+                f"freeze_vision_tower=true but {n_trainable_vision} vision parameters "
+                f"are still trainable - the freeze did not take effect. Check that "
+                f"this model family still uses '.visual.' in its vision module names."
+            )
+    else:
+        if vision_modules == 0:
+            raise RuntimeError(f"LoRA matched 0 vision modules (expected ~116). Check target_modules regex.")
 
     return model, processor
 

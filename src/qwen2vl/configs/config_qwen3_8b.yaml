@@ -47,8 +47,8 @@ training:
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  lora_r: 16  # Base rank for LLM
-  lora_alpha: 32
+  lora_r: 32  # Base rank for LLM
+  lora_alpha: 64
   lora_dropout: 0.1
   use_rslora: true  # Rank-Stabilized LoRA
   use_dora: false
@@ -56,21 +56,21 @@ training:
 
   # Rank asymmetry - Vision r=64, LLM r=16 (~80M params, optimal capacity)
   rank_pattern:
-    qkv: 8         # Vision attention (critical for stroke patterns)
-    proj: 8        # Vision output projection
-    linear_fc1: 8  # Vision MLP layer 1 (learns visual features)
-    linear_fc2: 8  # Vision MLP layer 2 (learns visual features)
+    qkv: 4       # Vision attention (critical for stroke patterns)
+    proj: 4        # Vision output projection
+    linear_fc1: 4  # Vision MLP layer 1 (learns visual features)
+    linear_fc2: 4  # Vision MLP layer 2 (learns visual features)
   alpha_pattern:
-    qkv: 16        # Scale alpha proportionally (2*rank)
-    proj: 16
-    linear_fc1: 16
-    linear_fc2: 16
+    qkv: 8        # Scale alpha proportionally (2*rank)
+    proj: 8
+    linear_fc1: 8
+    linear_fc2: 8
 
   # Target modules - Covers vision tower + DeepStack mergers + LLM
   # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
   # LLM: self_attn (q/k/v/o_proj) + mlp (gate/up/down_proj)
   lora_target_modules: '^model\.(?:visual\.(?:blocks\.\d+\.(?:attn\.(?:qkv|proj)|mlp\.linear_fc[12])|merger\.linear_fc[12]|deepstack_merger_list\.\d+\.linear_fc[12])|language_model\.layers\.\d+\.(?:self_attn\.[qkvo]_proj|mlp\.(?:gate|up|down)_proj))'
-
+  freeze_vision_tower: true
   lora_modules_to_save: null  # Merger covered in target_modules regex
 
   max_pixels: 2016000
