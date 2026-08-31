@@ -56,15 +56,15 @@ training:
 
   # Rank asymmetry - Vision r=64, LLM r=8 (~80M params, optimal capacity)
   rank_pattern:
-    qkv: 32         # Vision attention (critical for stroke patterns)
-    proj: 32        # Vision output projection
-    linear_fc1: 32  # Vision MLP layer 1 (learns visual features)
-    linear_fc2: 32  # Vision MLP layer 2 (learns visual features)
+    qkv: 64         # Vision attention (critical for stroke patterns)
+    proj: 64        # Vision output projection
+    linear_fc1: 64  # Vision MLP layer 1 (learns visual features)
+    linear_fc2: 64  # Vision MLP layer 2 (learns visual features)
   alpha_pattern:
-    qkv: 64        # Scale alpha proportionally (2*rank)
-    proj: 64
-    linear_fc1: 64
-    linear_fc2: 64
+    qkv: 128        # Scale alpha proportionally (2*rank)
+    proj: 128
+    linear_fc1: 128
+    linear_fc2: 128
 
   # Target modules - Covers vision tower + DeepStack mergers + LLM
   # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
@@ -101,7 +101,7 @@ training:
     min_delta: 0.0001  # Very small threshold - catches tiny improvements, avoids noise
 
 augmentation:
-  enabled: true  # Document-aware augmentation based on condition analysis
+  enabled: false # Document-aware augmentation based on condition analysis
 
   # DEGRADATION augmentations (disabled for poor-condition docs)
   p_blur: 0.15         # ENABLED - mild (0.5-1.5px radius), gated off for poor/very-poor via p_degradation_mult
