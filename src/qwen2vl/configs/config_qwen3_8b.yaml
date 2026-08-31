@@ -56,15 +56,15 @@ training:
 
   # Rank asymmetry - Vision r=64, LLM r=16 (~80M params, optimal capacity)
   rank_pattern:
-    qkv: 64         # Vision attention (critical for stroke patterns)
-    proj: 64        # Vision output projection
-    linear_fc1: 64  # Vision MLP layer 1 (learns visual features)
-    linear_fc2: 64  # Vision MLP layer 2 (learns visual features)
+    qkv: 8         # Vision attention (critical for stroke patterns)
+    proj: 8        # Vision output projection
+    linear_fc1: 8  # Vision MLP layer 1 (learns visual features)
+    linear_fc2: 8  # Vision MLP layer 2 (learns visual features)
   alpha_pattern:
-    qkv: 128        # Scale alpha proportionally (2*rank)
-    proj: 128
-    linear_fc1: 128
-    linear_fc2: 128
+    qkv: 16        # Scale alpha proportionally (2*rank)
+    proj: 16
+    linear_fc1: 16
+    linear_fc2: 16
 
   # Target modules - Covers vision tower + DeepStack mergers + LLM
   # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
