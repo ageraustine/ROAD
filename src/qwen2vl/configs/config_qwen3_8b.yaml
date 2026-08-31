@@ -47,8 +47,8 @@ training:
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  lora_r: 16  # Base rank for LLM
-  lora_alpha: 32
+  lora_r: 8  # Base rank for LLM
+  lora_alpha: 16
   lora_dropout: 0.05  # ELITE: Lighter dropout (was 0.1, allow more learning)
   use_rslora: true  # Rank-Stabilized LoRA
   use_dora: false
@@ -75,9 +75,9 @@ training:
 
   max_pixels: 2016000
 
-  eval_steps: 50
-  save_steps: 50
-  save_total_limit: 1
+  eval_steps: 100
+  save_steps: 100
+  save_total_limit: 2
 
   # Compute CER+WER for monitoring (competition metric)
   compute_cer: true  # Also computes WER and competition score (0.5*WER + 0.5*CER)
