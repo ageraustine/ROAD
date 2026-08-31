@@ -966,7 +966,20 @@ def main():
             print(f"  (Last modified: {pd.Timestamp.fromtimestamp(summary_path.stat().st_mtime)})")
 
             with open(summary_path) as f:
-                cfg = json.load(f)
+                summary = json.load(f)
+
+            # BUG FIX: train.py writes summary.json as {"config": {...}, "results": [...]}
+            # (see train.py's train(): json.dump({"config": cfg, "results": results}, f, ...)).
+            # The actual model/data/training/inference config is nested under "config" -
+            # using the raw summary dict directly as cfg meant cfg["model"] etc. always
+            # raised KeyError, since the top-level keys were only "config" and "results".
+            if "config" not in summary:
+                raise KeyError(
+                    f"{summary_path} has no 'config' key - this doesn't look like a "
+                    f"summary.json written by train.py's train(). Found top-level keys: "
+                    f"{list(summary.keys())}"
+                )
+            cfg = summary["config"]
 
             print(f"  Using config from training run")
         else:
