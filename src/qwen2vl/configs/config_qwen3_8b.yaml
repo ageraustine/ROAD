@@ -47,16 +47,11 @@ training:
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  # Base rank/alpha - applies to anything NOT matched by rank_pattern below,
-  # i.e. the LLM's q/k/v/o_proj (attention) and gate/up/down_proj (MLP).
-  # UPDATED 2026-08-31: 16->32 per the hypothetical per-component ranking
-  # (see rank_pattern comment) - LLM attention and MLP landed at the same
-  # value in that table, so one base rank covers both without needing
   # separate rank_pattern entries for each LLM module.
   lora_r: 32
   lora_alpha: 64
   lora_dropout: 0.1
-  use_rslora: true  # Rank-Stabilized LoRA
+  use_rslora: false  # Rank-Stabilized LoRA
   use_dora: false
   loraplus_lr_ratio: null  # DISABLED - logging anomaly suggests possible bug (0 A params, 368 B params)
   # Re-balanced Rank Patterns: Low rank on Vision (prevents noise memorization),
