@@ -30,7 +30,7 @@ data:
   fuzzy_duplicate_threshold: 0.85  # Recommended: 0.85-0.95 for historical legal docs
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-4B-single-textdiff-2s"  # Single split with text difficulty stratification
+  output_dir: "/content/drive/MyDrive/prd/qwen3-4B-single-textdiff-3"  # Single split with text difficulty stratification
 
   batch_size: 2
   eval_batch_size: 2
@@ -47,8 +47,8 @@ training:
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  lora_r: 8  # Base rank for LLM
-  lora_alpha: 16
+  lora_r: 16  # Base rank for LLM
+  lora_alpha: 32
   lora_dropout: 0.05  # ELITE: Lighter dropout (was 0.1, allow more learning)
   use_rslora: true  # Rank-Stabilized LoRA
   use_dora: false
@@ -56,15 +56,15 @@ training:
 
   # Rank asymmetry - Vision r=64, LLM r=8 (~80M params, optimal capacity)
   rank_pattern:
-    qkv: 64         # Vision attention (critical for stroke patterns)
-    proj: 64        # Vision output projection
-    linear_fc1: 64  # Vision MLP layer 1 (learns visual features)
-    linear_fc2: 64  # Vision MLP layer 2 (learns visual features)
+    qkv: 32         # Vision attention (critical for stroke patterns)
+    proj: 32        # Vision output projection
+    linear_fc1: 32  # Vision MLP layer 1 (learns visual features)
+    linear_fc2: 32  # Vision MLP layer 2 (learns visual features)
   alpha_pattern:
-    qkv: 128        # Scale alpha proportionally (2*rank)
-    proj: 128
-    linear_fc1: 128
-    linear_fc2: 128
+    qkv: 64        # Scale alpha proportionally (2*rank)
+    proj: 64
+    linear_fc1: 64
+    linear_fc2: 64
 
   # Target modules - Covers vision tower + DeepStack mergers + LLM
   # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
@@ -142,7 +142,7 @@ augmentation:
   max_pixels_ratio: 1.0     # 100% of max_pixels (2,016,000)
 
 inference:
-  checkpoint: "outputs/qwen3-4B-full/best"
+  checkpoint: "/content/drive/MyDrive/prd/qwen3-4B-single-textdiff-3/best"
   output_csv: "submission_full.csv"
   max_new_tokens: 128  # Targets max at 120 chars - prevents loops structurally
   num_beams: 5
