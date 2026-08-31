@@ -30,7 +30,7 @@ data:
   fuzzy_duplicate_threshold: 0.85  # Recommended: 0.85-0.95 for historical legal docs
 
 training:
-  output_dir: "/content/drive/MyDrive/prd/qwen3-4B-single-textdiff-2"  # Single split with text difficulty stratification
+  output_dir: "/content/drive/MyDrive/prd/qwen3-4B-single-textdiff-2s"  # Single split with text difficulty stratification
 
   batch_size: 2
   eval_batch_size: 2
