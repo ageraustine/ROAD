@@ -47,7 +47,13 @@ training:
   max_grad_norm: 1.0
   gradient_checkpointing: true
 
-  lora_r: 32  # Base rank for LLM
+  # Base rank/alpha - applies to anything NOT matched by rank_pattern below,
+  # i.e. the LLM's q/k/v/o_proj (attention) and gate/up/down_proj (MLP).
+  # UPDATED 2026-08-31: 16->32 per the hypothetical per-component ranking
+  # (see rank_pattern comment) - LLM attention and MLP landed at the same
+  # value in that table, so one base rank covers both without needing
+  # separate rank_pattern entries for each LLM module.
+  lora_r: 32
   lora_alpha: 64
   lora_dropout: 0.1
   use_rslora: true  # Rank-Stabilized LoRA
@@ -55,22 +61,58 @@ training:
   loraplus_lr_ratio: null  # DISABLED - logging anomaly suggests possible bug (0 A params, 368 B params)
 
   # Rank asymmetry - Vision r=64, LLM r=16 (~80M params, optimal capacity)
+  # Rank pattern keys are matched by PEFT via SUFFIX match against the full
+  # dotted module path (re.match(r".*\." + key + "$", module_name) - verified
+  # against peft's actual _create_and_replace source, see
+  # github.com/huggingface/peft/issues/2194). This matters here specifically:
+  # the previous bare 'linear_fc1'/'linear_fc2' keys matched ALL THREE
+  # locations identically - blocks.N.mlp.linear_fc1, merger.linear_fc1, AND
+  # deepstack_merger_list.N.linear_fc1 all end in ".linear_fc1", so they were
+  # silently sharing one rank, not independently controllable. Decoupled
+  # below into three distinct keys per fc1/fc2 (mlp / merger / deepstack) -
+  # verified each resolves to exactly one key with no ambiguity and no
+  # accidental match against any language_model module. Values are UNCHANGED
+  # from before (still 64/128 everywhere) - this is a pure structural
+  # refactor so a future experiment can vary each group's rank independently,
+  # without this change itself altering training behavior.
+  # HYPOTHETICAL RANKS (2026-08-31) - capacity assigned by how domain-specific
+  # each component's job is, not by which tower it sits in:
+  #   - Attention (spatial routing in vision, sequential routing in the LLM)
+  #     is the most likely to transfer cleanly from pretraining -> lightest.
+  #   - MLP (per-token feature/content encoding - stroke vs. stain, period
+  #     vocabulary, place names) needs real adaptation -> moderate.
+  #   - Merger + DeepStack (the vision->LLM translation bridge - the one
+  #     piece with no pretrained equivalent at all, regardless of how good
+  #     either tower is individually) -> protected at the highest rank.
+  # UNVERIFIED: this is a first-principles priority ordering (merger/deepstack
+  # > MLP > attention), not confirmed against real training runs the way the
+  # earlier vision=64-vs-8 comparison was. Treat the RELATIVE ordering as the
+  # actual claim; the specific numbers are a reasonable starting guess, not a
+  # measured result.
   rank_pattern:
-    qkv: 4       # Vision attention (critical for stroke patterns)
-    proj: 4        # Vision output projection
-    linear_fc1: 4  # Vision MLP layer 1 (learns visual features)
-    linear_fc2: 4  # Vision MLP layer 2 (learns visual features)
+    qkv: 16                                          # Vision attention (fused QKV) - light, spatial routing should transfer well
+    proj: 16                                         # Vision attention output proj - light, same reasoning
+    'mlp\.linear_fc1': 32                            # Raw vision block MLP fc1 - moderate, real per-patch feature adaptation
+    'mlp\.linear_fc2': 32                            # Raw vision block MLP fc2 - moderate
+    'merger\.linear_fc1': 64                         # Merger (vision->LLM bridge) fc1 - protected, no pretrained equivalent
+    'merger\.linear_fc2': 64                         # Merger fc2 - protected
+    'deepstack_merger_list\.\d+\.linear_fc1': 64     # DeepStack fusion path fc1 - protected, same reasoning as merger
+    'deepstack_merger_list\.\d+\.linear_fc2': 64     # DeepStack fusion path fc2 - protected
   alpha_pattern:
-    qkv: 8        # Scale alpha proportionally (2*rank)
-    proj: 8
-    linear_fc1: 8
-    linear_fc2: 8
+    qkv: 32         # Scale alpha proportionally (2*rank)
+    proj: 32
+    'mlp\.linear_fc1': 64
+    'mlp\.linear_fc2': 64
+    'merger\.linear_fc1': 128
+    'merger\.linear_fc2': 128
+    'deepstack_merger_list\.\d+\.linear_fc1': 128
+    'deepstack_merger_list\.\d+\.linear_fc2': 128
 
   # Target modules - Covers vision tower + DeepStack mergers + LLM
   # Vision: blocks (qkv/proj/linear_fc1/2) + merger + deepstack_merger_list
   # LLM: self_attn (q/k/v/o_proj) + mlp (gate/up/down_proj)
   lora_target_modules: '^model\.(?:visual\.(?:blocks\.\d+\.(?:attn\.(?:qkv|proj)|mlp\.linear_fc[12])|merger\.linear_fc[12]|deepstack_merger_list\.\d+\.linear_fc[12])|language_model\.layers\.\d+\.(?:self_attn\.[qkvo]_proj|mlp\.(?:gate|up|down)_proj))'
-  freeze_vision_tower: true
+  freeze_vision_tower: false
   lora_modules_to_save: null  # Merger covered in target_modules regex
 
   max_pixels: 2016000
