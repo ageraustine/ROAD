@@ -181,17 +181,58 @@ def remove_repetitions(text: str, max_repetitions: int = 5) -> str:
 
 
 def clean_output(text: str) -> str:
-    """Clean model output, removing any chat artifacts and excessive repetitions."""
+    """Clean model output, removing genuine chat-template leakage only."""
     text = str(text)
 
-    # Remove common chat template artifacts
-    artifacts = ["<|assistant|>", "<|user|>", "assistant", "Assistant:"]
+    # FIXED (2026-08-31): the previous artifact list was ["<|assistant|>",
+    # "<|user|>", "assistant", "Assistant:"] - none of the first two are
+    # real Qwen tokens (Qwen's ChatML format is "<|im_start|>role\n...
+    # <|im_end|>" - role names are plain text after <|im_start|>, never
+    # wrapped in their own pipe-delimiters; verified directly against
+    # train.py's own ASSISTANT_HEADER = "<|im_start|>assistant\n" constant).
+    # So the old list provided ZERO actual protection against real Qwen
+    # chat-template leakage, while the bare "assistant"/"Assistant:" entries
+    # actively corrupted legitimate content: text.split(artifact)[-1] deletes
+    # everything up to and including the first match, and "assistant" is an
+    # ordinary English word ("with the assistance of", "assistant to the
+    # said notary") that plausibly appears in genuine 17th-18th century
+    # legal prose. Demonstrated directly: "John Smith assistant to the said
+    # notary publique" was silently mangled into " to the said notary
+    # publique" - a correct transcription destroyed by post-processing,
+    # not a real artifact.
+    #
+    # Replaced with the actual Qwen ChatML markers. These are still matched
+    # as substrings (not full-token-boundary-safe) but are FAR less likely
+    # to occur in genuine transcribed text than a bare English word - "<|"
+    # is not a sequence historical manuscripts produce.
+    artifacts = ["<|im_start|>assistant", "<|im_start|>user", "<|im_start|>system", "<|im_end|>"]
     for artifact in artifacts:
         if artifact in text:
-            text = text.split(artifact)[-1]
+            # Keep content BEFORE the marker, not after. The realistic
+            # failure mode is the model finishing its real answer correctly
+            # and then failing to stop cleanly, hallucinating a new turn
+            # afterward - we want to keep the genuine answer and discard the
+            # hallucinated continuation. split()[-1] (keep-after) was tried
+            # first and caught during verification: it turned
+            # "By this publique Act<|im_end|>" into "" (empty), destroying a
+            # complete, correct transcription just because it ended cleanly.
+            text = text.split(artifact)[0]
 
-    # Remove excessive repetitive patterns (defensive layer)
-    text = remove_repetitions(text, max_repetitions=5)
+    # REMOVED (2026-08-31, per explicit request): previously called
+    # remove_repetitions(text, max_repetitions=5) here as a "defensive
+    # layer" against degenerate generation loops. Dropped in favor of
+    # trusting the model's raw output - this task's own domain has
+    # legitimate repetition (legal boilerplate, repeated separator marks),
+    # and repetition_penalty=1.0 was already deliberately chosen for the
+    # same reason at generation time. A second, heuristic truncation layer
+    # after generation risked cutting real content for the same reason the
+    # artifact-stripping above did, even though remove_repetitions' specific
+    # thresholds looked reasonably conservative on inspection. If degenerate
+    # repetition turns out to be a real problem in practice, address it via
+    # generation-time controls (e.g. a repetition_penalty > 1.0, or a
+    # no_repeat_ngram_size) rather than post-hoc text surgery, so the
+    # decision is visible in generation parameters rather than silently
+    # applied after the fact.
 
     return " ".join(text.split()).strip()
 
